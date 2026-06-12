@@ -518,9 +518,9 @@ public class OrderController {
 
         audit.log(user.id().toString(), "VALIDATION_ORDRE", AuditService.SUCCES,
                 order.reference(), ip.value());
-        notifications.notify(order.clientId(), "INFO", "Ordre transmis pour adjudication",
+        notifications.notify(order.clientId(), "INFO", "Ordre validé",
                 "Votre ordre " + order.reference()
-                        + " a été validé et transmis au marché primaire.", order.reference());
+                        + " est validé et en cours de traitement.", order.reference());
         return fetch(id);
     }
 
@@ -564,7 +564,9 @@ public class OrderController {
         ApiException.ensure(!FINAL_STATUSES.contains(order.status()),
                 "cet ordre est clôturé : son statut ne peut plus être modifié");
 
-        // ── Saisie d'un resultat d'adjudication : passe en validation superviseur ──
+        // ── Adjudication DIRECTE (un seul niveau) : l'agent applique le résultat ──
+        // Plus de validation superviseur : le résultat saisi par l'agent
+        // (ORDER_RESULT) prend effet immédiatement et l'ordre est finalisé.
         if (ADJUDICATION_RESULTS.contains(req.status())) {
             user.require(Permission.ORDER_RESULT);
             ApiException.ensure("EN_ATTENTE_ADJUDICATION".equals(order.status()),
@@ -577,21 +579,20 @@ public class OrderController {
             String commentaire = req.commentaire() != null
                     ? req.commentaire().trim() : order.commentaireResultat();
 
-            // Le statut visible reste EN_ATTENTE_ADJUDICATION ; seul le resultat
-            // propose est enregistre, masque au client jusqu'a validation.
-            jdbc.update("UPDATE orders SET resultat_propose=?, resultat_propose_par=?, "
-                            + "resultat_propose_at=now(), resultat_valide_par=NULL, "
-                            + "resultat_valide_at=NULL, montant_adjuge=?, volume_alloue=?, "
+            // Le résultat est appliqué et marqué validé par l'agent lui-même
+            // (resultat_valide_at renseigné) : l'ordre atteint son statut final.
+            jdbc.update("UPDATE orders SET status=?, resultat_propose=?, resultat_propose_par=?, "
+                            + "resultat_propose_at=now(), resultat_valide_par=?, "
+                            + "resultat_valide_at=now(), montant_adjuge=?, volume_alloue=?, "
                             + "taux_adjuge=?, commentaire_resultat=?, updated_at=now() WHERE id=?",
-                    req.status(), user.id(), montantAdjuge, volumeAlloue, tauxAdjuge, commentaire, id);
+                    req.status(), req.status(), user.id(), user.id(),
+                    montantAdjuge, volumeAlloue, tauxAdjuge, commentaire, id);
 
-            audit.log(user.id().toString(), "PROPOSITION_RESULTAT_" + req.status(),
+            audit.log(user.id().toString(), "ADJUDICATION_" + req.status(),
                     AuditService.SUCCES, order.reference(), ip.value());
-            // Notifie les superviseurs qu'une adjudication attend leur validation.
-            notifications.notifyRole("SUPERVISEUR", "WARN", "Adjudication à valider",
-                    "L'ordre " + order.reference() + " a un résultat d'adjudication ("
-                            + resultLabel(req.status()) + ") en attente de votre validation.",
-                    order.reference());
+            // Le client est informé sans détail interne (pas de nom de validateur).
+            notifications.notify(order.clientId(), "INFO", "Mise à jour de votre ordre",
+                    "Votre ordre " + order.reference() + " a été traité.", order.reference());
             return fetch(id);
         }
 
@@ -753,7 +754,9 @@ public class OrderController {
                 null,                 // notes internes — jamais exposees au client
                 null,                 // ip de soumission — masquee
                 o.signatureData(), o.signatureVerified(),
-                o.validatedByAgent(), o.validatedByAgentNom(), o.dateValidationAgent(),
+                null,                 // identifiant du valideur — masqué au client
+                null,                 // nom du valideur — masqué au client (pas de « qui a validé »)
+                o.dateValidationAgent(),
                 pendingResult ? null : o.resultatPropose(),
                 pendingResult ? null : o.resultatProposeAt(),
                 o.resultatValideAt());

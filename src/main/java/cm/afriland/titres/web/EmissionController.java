@@ -287,10 +287,11 @@ public class EmissionController {
         return row;
     }
 
-    /** {@code POST /emissions/:id/publish} — BROUILLON -> PUBLIE (EMISSION_VALIDATE). */
+    /** {@code POST /emissions/:id/publish} — BROUILLON -> PUBLIE.
+     *  Publication par l'agent (EMISSION_CREATE), sans validation superviseur. */
     @PostMapping("/{id}/publish")
     public EmissionResponse publish(AuthUser user, ClientIp ip, @PathVariable UUID id) {
-        user.require(Permission.EMISSION_VALIDATE);
+        user.require(Permission.EMISSION_CREATE);
         EmissionResponse current = fetch(id);
         ApiException.ensure("BROUILLON".equals(current.status()),
                 "seule une fiche en brouillon peut être publiée");
@@ -313,7 +314,7 @@ public class EmissionController {
      */
     @PostMapping("/publish-all")
     public ResponseEntity<java.util.Map<String, Object>> publishAll(AuthUser user, ClientIp ip) {
-        user.require(Permission.EMISSION_VALIDATE);
+        user.require(Permission.EMISSION_CREATE);
         // On ne publie que les brouillons encore ouverts (clôture future) : publier
         // une fiche déjà expirée la clôturerait aussitôt. Les fiches expirées sont
         // ignorées et signalées pour que l'opérateur corrige leur date limite.
