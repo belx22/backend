@@ -469,12 +469,19 @@ public class AuthController {
         UserRow row = jdbc.queryForObject(
                 "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?", UserRow.MAPPER, user.id());
 
-        if (!password.verify(req.currentPassword(), row.passwordHash())) {
-            audit.log(user.id().toString(), "CHANGEMENT_MDP", AuditService.ECHEC, "—", clientIp.value());
-            throw ApiException.unauthorized("Mot de passe actuel incorrect.");
+        // Première connexion : l'utilisateur vient de s'authentifier (login + MFA)
+        // avec son mot de passe provisoire ; le re-saisir serait redondant. On NE
+        // vérifie donc PAS le mot de passe actuel dans ce cas. Pour un changement
+        // VOLONTAIRE (drapeau retombé), le mot de passe actuel reste exigé.
+        if (!row.mustChangePassword()) {
+            if (req.currentPassword() == null
+                    || !password.verify(req.currentPassword(), row.passwordHash())) {
+                audit.log(user.id().toString(), "CHANGEMENT_MDP", AuditService.ECHEC, "—", clientIp.value());
+                throw ApiException.unauthorized("Mot de passe actuel incorrect.");
+            }
+            ApiException.ensure(!req.newPassword().equals(req.currentPassword()),
+                    "le nouveau mot de passe doit être différent de l'actuel");
         }
-        ApiException.ensure(!req.newPassword().equals(req.currentPassword()),
-                "le nouveau mot de passe doit être différent de l'actuel");
 
         jdbc.update("UPDATE users SET password_hash = ?, must_change_password = FALSE, "
                 + "initial_password_enc = NULL, updated_at = now() WHERE id = ?",
