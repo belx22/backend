@@ -1,0 +1,16 @@
+-- ============================================================================
+-- Tolérance au rechargement rapide pour la rotation des jetons de rafraîchissement.
+--
+-- À chaque /auth/refresh, l'ancien jeton est révoqué et un nouveau est émis
+-- (rotation — détection de rejeu). Lors d'actualisations rapides de la page (ou
+-- d'une requête /refresh avortée par le rechargement), le navigateur peut
+-- renvoyer un jeton tout juste révoqué dont le cookie successeur n'a pas encore
+-- été enregistré → l'utilisateur était déconnecté à tort.
+--
+-- `rotated_at` horodate la révocation PAR ROTATION (uniquement). Un jeton
+-- présenté peu après sa rotation (fenêtre de grâce, cf. AuthController) est alors
+-- accepté une fois de plus au lieu de forcer une déconnexion. Les révocations de
+-- sécurité (déconnexion, changement de mot de passe, « révoquer tout ») laissent
+-- `rotated_at` à NULL et ne bénéficient donc JAMAIS de cette tolérance.
+-- ============================================================================
+ALTER TABLE refresh_tokens ADD COLUMN rotated_at TIMESTAMPTZ;

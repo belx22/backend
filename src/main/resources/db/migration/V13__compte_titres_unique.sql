@@ -1,0 +1,12 @@
+-- V13 — Unicite du numero de compte-titres.
+--
+-- Le compte-titres est TOUJOURS genere par la plateforme : il ne doit jamais
+-- etre partage entre deux clients. La generation cote applicatif verifie deja
+-- l'unicite (generateUniqueAccount) ; cette contrainte la garantit au niveau
+-- base (defense en profondeur), remplacant l'ancienne numerotation derivee de
+-- l'horodatage qui pouvait collisionner silencieusement.
+--
+-- Les utilisateurs internes (agent/superviseur/admin) n'ont pas de compte-titres
+-- (valeur NULL) : Postgres autorise plusieurs NULL sous une contrainte UNIQUE,
+-- donc cette contrainte ne les impacte pas.
+ALTER TABLE users ADD CONSTRAINT uq_users_compte_titres UNIQUE (compte_titres);

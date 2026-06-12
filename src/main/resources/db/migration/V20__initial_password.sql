@@ -1,0 +1,11 @@
+-- ============================================================================
+-- Mot de passe initial/provisoire conserve CHIFFRE (AES-GCM) afin que l'acteur
+-- back-office qui cree le compte (agent / superviseur) puisse le consulter tant
+-- que l'utilisateur ne l'a pas encore change (must_change_password = TRUE).
+--
+-- Des que l'utilisateur change son mot de passe (1re connexion, reinitialisation
+-- self-service), cette valeur est effacee (NULL) : elle n'est donc jamais
+-- consultable apres le 1er changement. La verification d'authentification reste
+-- basee sur l'empreinte Argon2id (password_hash), jamais sur cette valeur.
+-- ============================================================================
+ALTER TABLE users ADD COLUMN initial_password_enc TEXT;

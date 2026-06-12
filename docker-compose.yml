@@ -1,0 +1,94 @@
+name: afb-titres
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: afb_titres_db
+    environment:
+      POSTGRES_USER: afb_app
+      # Surchargeable via l'environnement ; defaut DEV uniquement.
+      POSTGRES_PASSWORD: "${SPRING_DATASOURCE_PASSWORD:-change_me_db}"
+      POSTGRES_DB: afb_titres
+    # Bind LOOPBACK : la base n'est joignable que depuis l'hote (jamais Internet).
+    # La connexion backend <-> db reste interne au reseau Docker (5432).
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U afb_app -d afb_titres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: .
+    container_name: afb_titres_backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Connexion PostgreSQL (format JDBC pour Spring Boot).
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/afb_titres
+      SPRING_DATASOURCE_USERNAME: afb_app
+      # Tous les secrets sont surchargeables par l'environnement (defauts DEV).
+      # EN PRODUCTION : definir imperativement SPRING_DATASOURCE_PASSWORD,
+      # APP_JWT_SECRET (aleatoire >= 32 octets), APP_MFA_DEV_CODE="" (vide),
+      # APP_SEED_ON_START=false, APP_AIF_TRUST_ALL_CERTS=false.
+      SPRING_DATASOURCE_PASSWORD: "${SPRING_DATASOURCE_PASSWORD:-change_me_db}"
+      APP_JWT_SECRET: "${APP_JWT_SECRET:-dev_secret_a_remplacer_en_production_32_caracteres_min}"
+      APP_ACCESS_TOKEN_TTL: "900"
+      APP_REFRESH_TOKEN_TTL: "2592000"
+      APP_FRONTEND_ORIGIN: "${APP_FRONTEND_ORIGIN:-http://62.169.26.178:33843,http://localhost:4200}"
+      # Mode d'authentification : LOCAL (base) | LDAP (Active Directory strict) |
+      # LDAP_THEN_LOCAL (annuaire puis repli base). L'annuaire se configure dans
+      # l'espace d'administration > LDAP / Active Directory.
+      APP_AUTH_MODE: "${APP_AUTH_MODE:-LOCAL}"
+      APP_SEED_ON_START: "${APP_SEED_ON_START:-true}"
+      # Code OTP fixe pour la demo. METTRE "" EN PRODUCTION (OTP aleatoire reel).
+      APP_MFA_DEV_CODE: "${APP_MFA_DEV_CODE:-123456}"
+      # Serveur Amplitude / AIF (consultation de solde — proxy backend uniquement).
+      # En production : renseigner APP_AIF_LOGIN / APP_AIF_PASSWORD via un secret
+      # manager et passer APP_AIF_TRUST_ALL_CERTS=false avec un trust-store dedie.
+      APP_AIF_BASE_URL: "${APP_AIF_BASE_URL:-https://172.21.88.95:8095/amplitude/accounts/v1}"
+      APP_AIF_LOGIN: "${APP_AIF_LOGIN:-}"
+      APP_AIF_PASSWORD: "${APP_AIF_PASSWORD:-}"
+      APP_AIF_TRUST_ALL_CERTS: "${APP_AIF_TRUST_ALL_CERTS:-true}"
+      # SMTP par variables d'environnement (prioritaire sur la config en base si
+      # SMTP_HOST est renseigne). Permet un envoi d'e-mails/OTP operationnel des
+      # le deploiement, sans UI, et insensible a une rotation de APP_JWT_SECRET.
+      SMTP_HOST: "${SMTP_HOST:-}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_USERNAME: "${SMTP_USERNAME:-}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+      SMTP_AUTH: "${SMTP_AUTH:-true}"
+      SMTP_STARTTLS: "${SMTP_STARTTLS:-true}"
+      APP_MAIL_FROM: "${APP_MAIL_FROM:-no-reply@afriland.cm}"
+      APP_MAIL_FROM_NAME: "${APP_MAIL_FROM_NAME:-Afriland First Bank - DFT}"
+      SERVER_PORT: "8080"
+    # Backend non expose publiquement : le frontend l'atteint en interne via
+    # le reseau Docker (http://backend:8080). Le binding loopback garde un
+    # acces local sur l'hote (test_api.py / curl) sans ouverture sur Internet.
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+  frontend:
+    # Contexte de build = dossier ../frontend (Angular SSR).
+    build: ../frontend
+    container_name: afb_titres_frontend
+    depends_on:
+      - backend
+    environment:
+      # Le serveur SSR Express relaie /api vers le backend (cote serveur,
+      # le navigateur ne dialogue qu'avec l'origine du frontend).
+      API_TARGET: http://backend:8080
+      PORT: "4000"
+      NODE_ENV: production
+    # Exposition publique : 62.169.26.178:33843 -> conteneur 4000.
+    ports:
+      - "33843:4000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

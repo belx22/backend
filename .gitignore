@@ -1,0 +1,11 @@
+# Build
+/target
+
+# Secrets — NE JAMAIS versionner
+.env
+*.log
+bello
+bello.pub
+*.pem
+*.key
+id_rsa*
