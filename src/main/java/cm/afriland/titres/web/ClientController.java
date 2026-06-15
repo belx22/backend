@@ -6,13 +6,16 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -389,7 +392,127 @@ public class ClientController {
         return ResponseEntity.status(HttpStatus.CREATED).body(dossier);
     }
 
+    // --- Requete de mise a jour (champs partiels : null = inchange) ---
+
+    record UpdateClientRequest(String raisonSociale, String rccm, String categorie,
+                               String typeCompte, String statut, String telephone,
+                               String email, ReqAdresse adresse) {
+    }
+
+    /** {@code PATCH /clients/:id} — met a jour l'identite, le contact principal et
+     *  l'adresse d'un client (CLIENT_MANAGE). Champs absents/null = inchanges. */
+    @PatchMapping("/{id}")
+    @Transactional
+    public ClientDossier updateClient(AuthUser user, ClientIp ip, @PathVariable UUID id,
+                                      @RequestBody UpdateClientRequest req) {
+        user.require(Permission.CLIENT_MANAGE);
+
+        String role = jdbc.query("SELECT role FROM users WHERE id = ? AND role IN " + CLIENT_ROLES,
+                rs -> rs.next() ? rs.getString(1) : null, id);
+        ApiException.ensure(role != null, "Client introuvable.");
+
+        String categorie = trimToNull(req.categorie());
+        if (categorie != null) {
+            ApiException.ensure("QUALIFIE".equals(categorie) || "NON_QUALIFIE".equals(categorie),
+                    "catégorie invalide (QUALIFIE ou NON_QUALIFIE)");
+        }
+        String compteStatut = trimToNull(req.statut());
+        if (compteStatut != null) {
+            ApiException.ensure(Set.of("ACTIF", "BLOQUE", "SUSPENDU", "CLOTURE").contains(compteStatut),
+                    "statut invalide (ACTIF, BLOQUE, SUSPENDU ou CLOTURE)");
+        }
+        // users.statut n'accepte que ACTIF/SUSPENDU : ACTIF reste ACTIF, tout le reste suspend l'acces.
+        String usersStatut = compteStatut == null ? null : ("ACTIF".equals(compteStatut) ? "ACTIF" : "SUSPENDU");
+
+        String email = req.email() == null ? null : req.email().trim().toLowerCase();
+        if (email != null && !email.isEmpty()) {
+            ApiException.ensure(email.contains("@"), "e-mail invalide");
+            Long taken = jdbc.queryForObject(
+                    "SELECT count(*) FROM users WHERE email = ? AND id <> ?", Long.class, email, id);
+            ApiException.ensure(taken != null && taken == 0, "un compte existe déjà avec cet e-mail");
+        } else {
+            email = null; // chaine vide -> inchange
+        }
+        String telephone = trimToNull(req.telephone());
+        String raisonSociale = trimToNull(req.raisonSociale());
+        String rccm = trimToNull(req.rccm());
+        String typeCompte = trimToNull(req.typeCompte());
+
+        // 1) Profil (cree s'il manque, puis maj partielle des champs fournis).
+        ensureProfileRow(id);
+        jdbc.update("UPDATE client_profiles SET raison_sociale = COALESCE(?, raison_sociale), "
+                        + "rccm = COALESCE(?, rccm), compte_statut = COALESCE(?, compte_statut) "
+                        + "WHERE user_id = ?",
+                raisonSociale, rccm, compteStatut, id);
+
+        // 2) Compte utilisateur (categorie, type, telephone, e-mail de connexion, statut ;
+        //    nom affiche = raison sociale pour une PM).
+        jdbc.update("UPDATE users SET categorie = COALESCE(?, categorie), "
+                        + "type_compte = COALESCE(?, type_compte), telephone = COALESCE(?, telephone), "
+                        + "email = COALESCE(?, email), statut = COALESCE(?, statut), "
+                        + "nom = CASE WHEN ? IS NOT NULL AND role = 'CLIENT_PM' THEN ? ELSE nom END "
+                        + "WHERE id = ?",
+                categorie, typeCompte, telephone, email, usersStatut, raisonSociale, raisonSociale, id);
+
+        // 3) Contact principal (ordre 0) : telephone + e-mail.
+        if (telephone != null || email != null) {
+            jdbc.update("UPDATE client_contacts SET telephone_portable = COALESCE(?, telephone_portable), "
+                            + "email = COALESCE(?, email) WHERE user_id = ? AND ordre = 0",
+                    telephone, email, id);
+        }
+
+        // 4) Adresse principale (ordre 0) : upsert si une rue est fournie.
+        ReqAdresse a = req.adresse();
+        if (a != null && a.rue() != null && !a.rue().trim().isEmpty()) {
+            String ville = a.ville() != null ? a.ville().trim() : "";
+            String pays = a.pays() != null ? a.pays().trim() : "Cameroun";
+            String kind = a.type() != null ? a.type() : ("CLIENT_PM".equals(role) ? "SIEGE" : "DOMICILE");
+            int updated = jdbc.update("UPDATE client_adresses SET type = ?, residence = ?, rue = ?, "
+                            + "code_postal = ?, ville = ?, pays = ? WHERE user_id = ? AND ordre = 0",
+                    kind, a.residence(), a.rue().trim(), a.codePostal(), ville, pays, id);
+            if (updated == 0) {
+                jdbc.update("INSERT INTO client_adresses (user_id, type, residence, rue, code_postal, "
+                                + "ville, pays, ordre) VALUES (?,?,?,?,?,?,?,0)",
+                        id, kind, a.residence(), a.rue().trim(), a.codePostal(), ville, pays);
+            }
+        }
+
+        audit.log(user.id().toString(), "MODIFICATION_CLIENT", AuditService.SUCCES, id.toString(), ip.value());
+        return loadDossiers(PROFILE_SELECT + " AND u.id = ?", id).stream().findFirst()
+                .orElseThrow(() -> new IllegalStateException("dossier introuvable après mise à jour"));
+    }
+
+    /**
+     * {@code DELETE /clients/:id} — desactive (clot) un client : compte suspendu,
+     * dossier clos (CLOTURE). Reversible (re-passer le statut a ACTIF via PATCH).
+     * L'historique (ordres, positions, documents) est integralement conserve.
+     * (CLIENT_MANAGE)
+     */
+    @DeleteMapping("/{id}")
+    @Transactional
+    public ClientDossier deactivateClient(AuthUser user, ClientIp ip, @PathVariable UUID id) {
+        user.require(Permission.CLIENT_MANAGE);
+        String role = jdbc.query("SELECT role FROM users WHERE id = ? AND role IN " + CLIENT_ROLES,
+                rs -> rs.next() ? rs.getString(1) : null, id);
+        ApiException.ensure(role != null, "Client introuvable.");
+
+        ensureProfileRow(id);
+        jdbc.update("UPDATE client_profiles SET compte_statut = 'CLOTURE' WHERE user_id = ?", id);
+        jdbc.update("UPDATE users SET statut = 'SUSPENDU' WHERE id = ?", id);
+        audit.log(user.id().toString(), "DESACTIVATION_CLIENT", AuditService.SUCCES, id.toString(), ip.value());
+        return loadDossiers(PROFILE_SELECT + " AND u.id = ?", id).stream().findFirst()
+                .orElseThrow(() -> new IllegalStateException("dossier introuvable après désactivation"));
+    }
+
     // ───────────────────────────── Helpers ──────────────────────────────────
+
+    /** Cree une ligne client_profiles minimale si absente (clients sans dossier formalise). */
+    private void ensureProfileRow(UUID id) {
+        jdbc.update("INSERT INTO client_profiles (user_id, type_personne, raison_sociale, compte_statut) "
+                        + "SELECT id, CASE WHEN role = 'CLIENT_PM' THEN 'PM' ELSE 'PP' END, "
+                        + "COALESCE(NULLIF(trim(coalesce(nom,'') || ' ' || coalesce(prenom,'')), ''), email), "
+                        + "'ACTIF' FROM users WHERE id = ? ON CONFLICT (user_id) DO NOTHING", id);
+    }
 
     /**
      * Genere un numero de compte ("037 10001 NNNNNNNNNNN") garanti unique en base
