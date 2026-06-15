@@ -18,6 +18,7 @@ import cm.afriland.titres.audit.AuditService;
 import cm.afriland.titres.error.ApiException;
 import cm.afriland.titres.security.AuthUser;
 import cm.afriland.titres.security.ClientIp;
+import cm.afriland.titres.security.OptionalAuthUser;
 import cm.afriland.titres.security.Permission;
 
 /**
@@ -55,12 +56,14 @@ public class MarcheConfigController {
 
     /**
      * {@code GET /admin/marche-config} — configuration courante.
-     * Lisible par tout utilisateur authentifie : elle determine le filtrage de
-     * l'affichage du marche primaire, y compris cote client. La modification
-     * reste reservee aux profils {@code CONFIG_MARCHE}.
+     * Lisible meme sans authentification (jeton optionnel) : elle determine le
+     * filtrage de l'affichage du marche primaire, charge des le demarrage de
+     * l'application (avant connexion) au meme titre que {@code GET /emissions}.
+     * Donnee non sensible (simples statuts affiches + fenetre de dates). La
+     * modification reste reservee aux profils {@code CONFIG_MARCHE} (voir PUT).
      */
     @GetMapping
-    public MarcheConfigResponse get(AuthUser user) {
+    public MarcheConfigResponse get(OptionalAuthUser user) {
         return load();
     }
 
