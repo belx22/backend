@@ -591,6 +591,26 @@ public class ClientController {
 
     // ───────────────────────────── Helpers ──────────────────────────────────
 
+    /** Normalise un nouvel e-mail (trim/minuscule), valide le format et l'unicite ;
+     *  renvoie null si vide/absent (= inchange). */
+    private String normalizeNewEmail(String raw, UUID excludeId) {
+        String e = raw == null ? null : raw.trim().toLowerCase();
+        if (e == null || e.isEmpty()) return null;
+        ApiException.ensure(e.contains("@"), "e-mail invalide");
+        Long taken = jdbc.queryForObject(
+                "SELECT count(*) FROM users WHERE email = ? AND id <> ?", Long.class, e, excludeId);
+        ApiException.ensure(taken != null && taken == 0, "un compte existe déjà avec cet e-mail");
+        return e;
+    }
+
+    /** Verifie qu'un numero de compte n'est pas deja utilise (titres ou especes) par un autre compte. */
+    private void ensureAccountFree(String numero, UUID excludeId, String message) {
+        Long taken = jdbc.queryForObject(
+                "SELECT count(*) FROM users WHERE (compte_titres = ? OR compte_especes = ?) AND id <> ?",
+                Long.class, numero, numero, excludeId);
+        ApiException.ensure(taken != null && taken == 0, message);
+    }
+
     /** Cree une ligne client_profiles minimale si absente (clients sans dossier formalise). */
     private void ensureProfileRow(UUID id) {
         jdbc.update("INSERT INTO client_profiles (user_id, type_personne, raison_sociale, compte_statut) "
