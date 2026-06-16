@@ -396,11 +396,16 @@ public class ClientController {
 
     record UpdateClientRequest(String raisonSociale, String rccm, String categorie,
                                String typeCompte, String statut, String telephone,
-                               String email, ReqAdresse adresse) {
+                               String email, String compteTitres, String compteEspecesLie,
+                               ReqAdresse adresse, List<ReqContact> signataires,
+                               List<ReqSousCompte> sousComptes) {
     }
 
-    /** {@code PATCH /clients/:id} — met a jour l'identite, le contact principal et
-     *  l'adresse d'un client (CLIENT_MANAGE). Champs absents/null = inchanges. */
+    /**
+     * {@code PATCH /clients/:id} — met a jour le dossier d'un client (CLIENT_MANAGE).
+     * Champs absents/null = inchanges. {@code signataires}/{@code sousComptes} :
+     * quand fournis (non null), REMPLACENT integralement la collection existante.
+     */
     @PatchMapping("/{id}")
     @Transactional
     public ClientDossier updateClient(AuthUser user, ClientIp ip, @PathVariable UUID id,
@@ -410,6 +415,7 @@ public class ClientController {
         String role = jdbc.query("SELECT role FROM users WHERE id = ? AND role IN " + CLIENT_ROLES,
                 rs -> rs.next() ? rs.getString(1) : null, id);
         ApiException.ensure(role != null, "Client introuvable.");
+        boolean pm = "CLIENT_PM".equals(role);
 
         String categorie = trimToNull(req.categorie());
         if (categorie != null) {
@@ -424,19 +430,56 @@ public class ClientController {
         // users.statut n'accepte que ACTIF/SUSPENDU : ACTIF reste ACTIF, tout le reste suspend l'acces.
         String usersStatut = compteStatut == null ? null : ("ACTIF".equals(compteStatut) ? "ACTIF" : "SUSPENDU");
 
-        String email = req.email() == null ? null : req.email().trim().toLowerCase();
-        if (email != null && !email.isEmpty()) {
-            ApiException.ensure(email.contains("@"), "e-mail invalide");
-            Long taken = jdbc.queryForObject(
-                    "SELECT count(*) FROM users WHERE email = ? AND id <> ?", Long.class, email, id);
-            ApiException.ensure(taken != null && taken == 0, "un compte existe déjà avec cet e-mail");
-        } else {
-            email = null; // chaine vide -> inchange
-        }
+        String email = normalizeNewEmail(req.email(), id);
         String telephone = trimToNull(req.telephone());
         String raisonSociale = trimToNull(req.raisonSociale());
         String rccm = trimToNull(req.rccm());
         String typeCompte = trimToNull(req.typeCompte());
+
+        // Numeros de compte : uniques en base (ni titres ni especes d'un autre compte).
+        String compteTitres = trimToNull(req.compteTitres());
+        if (compteTitres != null) {
+            ensureAccountFree(compteTitres, id, "ce numéro de compte-titres est déjà utilisé");
+        }
+        String compteEspeces = trimToNull(req.compteEspecesLie());
+        if (compteEspeces != null) {
+            ensureAccountFree(compteEspeces, id, "ce numéro de compte espèces est déjà utilisé");
+        }
+
+        // Signataires (si fournis) : le 1er pilote le compte de connexion (e-mail,
+        // telephone, nom/prenom pour une PP). Le 1er signataire prime sur les
+        // champs telephone/email de premier niveau.
+        List<ReqContact> sigs = req.signataires();
+        String nomEff = pm ? raisonSociale : null;
+        String prenomEff = null;
+        if (sigs != null) {
+            ApiException.ensure(!sigs.isEmpty(), "au moins un signataire requis");
+            for (ReqContact c : sigs) {
+                ApiException.ensure(trimToNull(c.nom()) != null, "le nom de chaque signataire est requis");
+            }
+            ReqContact f = sigs.get(0);
+            String fe = normalizeNewEmail(f.email(), id);
+            if (fe != null) {
+                email = fe;
+            }
+            String ft = trimToNull(f.telephonePortable());
+            if (ft == null) ft = trimToNull(f.telephoneBureau());
+            if (ft != null) telephone = ft;
+            if (!pm) {
+                nomEff = trimToNull(f.nom());
+                prenomEff = trimToNull(f.prenom());
+            }
+        }
+
+        // Sous-comptes (si fournis) : chaque ligne doit avoir un numero.
+        List<ReqSousCompte> scs = req.sousComptes();
+        if (scs != null) {
+            ApiException.ensure(!scs.isEmpty(), "au moins un sous-compte titres requis");
+            for (ReqSousCompte s : scs) {
+                ApiException.ensure(trimToNull(s.numero()) != null,
+                        "le numéro de chaque sous-compte titres est requis");
+            }
+        }
 
         // 1) Profil (cree s'il manque, puis maj partielle des champs fournis).
         ensureProfileRow(id);
@@ -445,23 +488,65 @@ public class ClientController {
                         + "WHERE user_id = ?",
                 raisonSociale, rccm, compteStatut, id);
 
-        // 2) Compte utilisateur (categorie, type, telephone, e-mail de connexion, statut ;
-        //    nom affiche = raison sociale pour une PM).
+        // 2) Compte utilisateur (categorie, type, telephone, e-mail de connexion,
+        //    statut, numeros de compte, nom/prenom affiches).
         jdbc.update("UPDATE users SET categorie = COALESCE(?, categorie), "
                         + "type_compte = COALESCE(?, type_compte), telephone = COALESCE(?, telephone), "
                         + "email = COALESCE(?, email), statut = COALESCE(?, statut), "
-                        + "nom = CASE WHEN ? IS NOT NULL AND role = 'CLIENT_PM' THEN ? ELSE nom END "
+                        + "compte_titres = COALESCE(?, compte_titres), "
+                        + "compte_especes = COALESCE(?, compte_especes), "
+                        + "nom = COALESCE(?, nom), prenom = COALESCE(?, prenom) "
                         + "WHERE id = ?",
-                categorie, typeCompte, telephone, email, usersStatut, raisonSociale, raisonSociale, id);
+                categorie, typeCompte, telephone, email, usersStatut, compteTitres, compteEspeces,
+                nomEff, prenomEff, id);
 
-        // 3) Contact principal (ordre 0) : telephone + e-mail.
-        if (telephone != null || email != null) {
+        // 3) Signataires : remplacement integral si fournis, sinon maj du contact
+        //    principal (ordre 0) avec le telephone/e-mail de premier niveau.
+        if (sigs != null) {
+            jdbc.update("DELETE FROM client_contacts WHERE user_id = ?", id);
+            for (int i = 0; i < sigs.size(); i++) {
+                ReqContact c = sigs.get(i);
+                jdbc.update("INSERT INTO client_contacts (user_id, type, nom, prenom, civilite, fonction, "
+                                + "telephone_portable, telephone_domicile, telephone_bureau, email, whatsapp, "
+                                + "piece_identite, numero_piece, date_validite_piece, lien_parente, ordre) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        id, c.type() != null ? c.type() : "TITULAIRE", c.nom().trim(),
+                        trimToNull(c.prenom()), c.civilite(), c.fonction(), c.telephonePortable(),
+                        c.telephoneDomicile(), c.telephoneBureau(), c.email(), c.whatsapp(),
+                        c.pieceIdentite(), c.numeroPiece(), c.dateValiditePiece(), c.lienParente(), i);
+            }
+        } else if (telephone != null || email != null) {
             jdbc.update("UPDATE client_contacts SET telephone_portable = COALESCE(?, telephone_portable), "
                             + "email = COALESCE(?, email) WHERE user_id = ? AND ordre = 0",
                     telephone, email, id);
         }
 
-        // 4) Adresse principale (ordre 0) : upsert si une rue est fournie.
+        // 4) Sous-comptes titres : remplacement integral si fournis.
+        if (scs != null) {
+            jdbc.update("DELETE FROM sous_comptes_titres WHERE user_id = ?", id);
+            for (int i = 0; i < scs.size(); i++) {
+                ReqSousCompte s = scs.get(i);
+                LocalDate dateOuv;
+                try {
+                    dateOuv = s.dateOuverture() != null ? LocalDate.parse(s.dateOuverture()) : LocalDate.now();
+                } catch (RuntimeException e) {
+                    dateOuv = LocalDate.now();
+                }
+                jdbc.update("INSERT INTO sous_comptes_titres (user_id, numero, libelle, type, statut, "
+                                + "date_ouverture, positions_count, valeur_totale, observations, ordre) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        id, s.numero().trim(),
+                        (s.libelle() != null && !s.libelle().trim().isEmpty())
+                                ? s.libelle().trim() : "Compte de conservation",
+                        s.type() != null ? s.type() : "CONSERVATION",
+                        s.statut() != null ? s.statut() : "ACTIF", dateOuv,
+                        Math.max(0, s.positionsCount() == null ? 0 : s.positionsCount()),
+                        Math.max(0, s.valeurTotale() == null ? 0 : s.valeurTotale()),
+                        trimToNull(s.observations()), i);
+            }
+        }
+
+        // 5) Adresse principale (ordre 0) : upsert si une rue est fournie.
         ReqAdresse a = req.adresse();
         if (a != null && a.rue() != null && !a.rue().trim().isEmpty()) {
             String ville = a.ville() != null ? a.ville().trim() : "";
