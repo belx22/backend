@@ -12,6 +12,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -143,6 +144,12 @@ public class OrderController {
     }
 
     record CoSignRequest(@NotNull Boolean approve) {
+    }
+
+    record UpdateOrderRequest(
+            @NotNull @Min(value = 1, message = "le volume doit être un entier positif") Integer volume,
+            @NotNull @PositiveOrZero Double tauxSoumis,
+            String signatureData) {
     }
 
     record CoSignatureView(UUID orderId, String reference, String emissionCode, String nature,
@@ -502,6 +509,34 @@ public class OrderController {
                 order.reference(), ip.value());
         notifications.notify(order.clientId(), "INFO", "Ordre annulé",
                 "Votre ordre " + order.reference() + " a été annulé.", order.reference());
+        return fetch(id);
+    }
+
+    /** {@code PATCH /orders/:id} — modification d'un ordre SOUMIS par le client propriétaire. */
+    @PatchMapping("/{id}")
+    public OrderResponse update(AuthUser user, ClientIp ip, @PathVariable UUID id,
+                                @Valid @RequestBody UpdateOrderRequest req) {
+        if (!user.isClient()) {
+            throw ApiException.forbidden("Seul un client peut modifier son ordre.");
+        }
+        OrderResponse order = fetch(id);
+        authorizeView(user, order);
+        ApiException.ensure("SOUMIS".equals(order.status()),
+                "seul un ordre au statut « Soumis » peut être modifié");
+        ApiException.ensure(order.validatedByAgent() == null,
+                "cet ordre a déjà été pris en charge par un agent et ne peut plus être modifié");
+
+        Long vnu = jdbc.queryForObject(
+                "SELECT valeur_nominale_unitaire FROM emissions WHERE id = ?",
+                Long.class, order.emissionId());
+        if (vnu == null) throw ApiException.badRequest("Émission introuvable.");
+        long montant = (long) req.volume() * vnu;
+
+        jdbc.update("UPDATE orders SET volume=?, taux_soumis=?, montant=?, "
+                + "signature_data=COALESCE(?,signature_data), updated_at=now() WHERE id=?",
+                req.volume(), req.tauxSoumis(), montant, req.signatureData(), id);
+
+        audit.log(user.id().toString(), "MODIFICATION_ORDRE", AuditService.SUCCES, order.reference(), ip.value());
         return fetch(id);
     }
 
