@@ -146,6 +146,80 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
+
+            <!-- ── Couverture de code JaCoCo ─────────────────────────────── -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.12</version>
+
+                <configuration>
+                    <!-- Classes sans logique metier : exclues du rapport et des seuils -->
+                    <excludes>
+                        <exclude>cm/afriland/titres/AfbTitresApplication.class</exclude>
+                        <exclude>cm/afriland/titres/dto/**</exclude>
+                        <exclude>cm/afriland/titres/seed/**</exclude>
+                        <exclude>cm/afriland/titres/support/Countries.class</exclude>
+                    </excludes>
+                </configuration>
+
+                <executions>
+                    <!-- 1) Instrumente le bytecode avant les tests (surefire) -->
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+
+                    <!-- 2) Rapport HTML + XML + CSV dans target/site/jacoco/ -->
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>verify</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+
+                    <!-- 3) Seuils minimaux de couverture — echec du build si non atteints -->
+                    <execution>
+                        <id>jacoco-check</id>
+                        <phase>verify</phase>
+                        <goals><goal>check</goal></goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <!-- 60 % des lignes couvertes -->
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.60</minimum>
+                                        </limit>
+                                        <!-- 50 % des branches couvertes -->
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.50</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                                <!-- Couverture par package : securite >= 80 % lignes -->
+                                <rule>
+                                    <element>PACKAGE</element>
+                                    <includes>
+                                        <include>cm/afriland/titres/security</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 </project>
