@@ -62,7 +62,12 @@ class JwtServiceTest {
     @Test
     void verify_token_altere_leve_exception() {
         String token = jwtService.issue(UUID.randomUUID(), "agent@afb.cm", "AGENT", false);
-        String tampered = token.substring(0, token.length() - 1) + "X";
+        // Altération déterministe du dernier caractère de la signature : on
+        // choisit un remplacant TOUJOURS différent de l'original (sinon, si le
+        // dernier caractère était deja 'X', le token resterait valide → flaky).
+        char last = token.charAt(token.length() - 1);
+        char repl = (last == 'A') ? 'B' : 'A';
+        String tampered = token.substring(0, token.length() - 1) + repl;
 
         assertThrows(Exception.class, () -> jwtService.verify(tampered));
     }
