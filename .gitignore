@@ -1,6 +1,10 @@
 # Build
 /target
 
+# SonarQube — token local + dossier de travail du scanner, ne pas versionner
+sonar-project.properties
+.scannerwork/
+
 # Secrets — NE JAMAIS versionner
 .env
 *.log

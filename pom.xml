@@ -22,6 +22,9 @@
         <bouncycastle.version>1.78.1</bouncycastle.version>
         <jjwt.version>0.12.6</jjwt.version>
         <zxing.version>3.5.3</zxing.version>
+        <!-- Testcontainers récent : docker-java compatible avec Docker Engine 29.x
+             (le 3.3.6 bundlé par défaut échoue son probe /info → HTTP 400). -->
+        <testcontainers.version>1.20.4</testcontainers.version>
     </properties>
 
     <dependencies>
@@ -147,6 +150,24 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
 
+            <!-- ── Compatibilité Mockito / ByteBuddy avec Java 16+ ──────── -->
+            <!-- Java 16+ enforce strong encapsulation; ces opens permettent  -->
+            <!-- à ByteBuddy de modifier les classes Spring lors des tests.   -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- Java 16+ : ouvre les modules internes pour Mockito/ByteBuddy -->
+                    <argLine>@{argLine}
+                        --add-opens java.base/java.lang=ALL-UNNAMED
+                        --add-opens java.base/java.lang.reflect=ALL-UNNAMED
+                        --add-opens java.base/java.util=ALL-UNNAMED
+                        --add-opens java.base/java.io=ALL-UNNAMED
+                        --add-opens java.base/sun.nio.ch=ALL-UNNAMED
+                    </argLine>
+                </configuration>
+            </plugin>
+
             <!-- ── Couverture de code JaCoCo ─────────────────────────────── -->
             <plugin>
                 <groupId>org.jacoco</groupId>
@@ -165,9 +186,24 @@
 
                 <executions>
                     <!-- 1) Instrumente le bytecode avant les tests (surefire) -->
+                    <!-- Les classes JDK internes (sun.*, java.*, jdk.*) sont  -->
+                    <!-- exclues : JaCoCo 0.8.12 ne parse pas Java 26 (v. 70). -->
                     <execution>
                         <id>jacoco-prepare-agent</id>
                         <goals><goal>prepare-agent</goal></goals>
+                        <configuration>
+                            <excludes>
+                                <exclude>sun/*</exclude>
+                                <exclude>java/*</exclude>
+                                <exclude>javax/*</exclude>
+                                <exclude>jdk/*</exclude>
+                                <exclude>com/sun/*</exclude>
+                                <exclude>cm/afriland/titres/AfbTitresApplication.class</exclude>
+                                <exclude>cm/afriland/titres/dto/**</exclude>
+                                <exclude>cm/afriland/titres/seed/**</exclude>
+                                <exclude>cm/afriland/titres/support/Countries.class</exclude>
+                            </excludes>
+                        </configuration>
                     </execution>
 
                     <!-- 2) Rapport HTML + XML + CSV dans target/site/jacoco/ -->
