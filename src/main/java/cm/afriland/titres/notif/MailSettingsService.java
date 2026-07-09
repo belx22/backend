@@ -32,7 +32,8 @@ public class MailSettingsService {
     private final cm.afriland.titres.config.AppProperties props;
 
     /** Cache des parametres courants (mot de passe en clair, jamais serialise). */
-    private volatile MailSettings cache;
+    private final java.util.concurrent.atomic.AtomicReference<MailSettings> cache =
+            new java.util.concurrent.atomic.AtomicReference<>();
 
     public MailSettingsService(JdbcTemplate jdbc, SecretCipher cipher,
                                cm.afriland.titres.config.AppProperties props) {
@@ -60,7 +61,7 @@ public class MailSettingsService {
     @PostConstruct
     public void reload() {
         try {
-            this.cache = jdbc.queryForObject(
+            cache.set(jdbc.queryForObject(
                     "SELECT host, port, username, password_enc, from_address, from_name, "
                             + "auth, starttls, enabled, logo_url, signature FROM mail_settings WHERE id = TRUE",
                     (rs, n) -> new MailSettings(
@@ -78,12 +79,12 @@ public class MailSettingsService {
                             rs.getBoolean("starttls"),
                             rs.getBoolean("enabled"),
                             rs.getString("logo_url"),
-                            rs.getString("signature")));
+                            rs.getString("signature"))));
         } catch (RuntimeException e) {
             log.warn("Parametres de messagerie indisponibles : {}", e.getMessage());
-            this.cache = new MailSettings(null, 587, null, null,
+            cache.set(new MailSettings(null, 587, null, null,
                     "no-reply@afriland.cm", "Afriland First Bank - DFT", true, true, false,
-                    null, null);
+                    null, null));
         }
     }
 
@@ -102,8 +103,8 @@ public class MailSettingsService {
     public MailSettings get() {
         MailSettings env = envOverride();
         if (env != null) return env;
-        if (cache == null) reload();
-        return cache;
+        if (cache.get() == null) reload();
+        return cache.get();
     }
 
     /** Vrai si la config SMTP provient de l'environnement (prioritaire sur la base). */
@@ -127,9 +128,9 @@ public class MailSettingsService {
             from = (user != null && !user.isBlank()) ? user : from;
         }
         // Habillage (logo/signature) toujours lu depuis la base.
-        if (cache == null) reload();
-        String logoUrl = cache != null ? cache.logoUrl() : null;
-        String signature = cache != null ? cache.signature() : null;
+        if (cache.get() == null) reload();
+        String logoUrl = cache.get() != null ? cache.get().logoUrl() : null;
+        String signature = cache.get() != null ? cache.get().signature() : null;
         return new MailSettings(
                 props.getSmtpHost(), props.getSmtpPort(), trimToNull(user),
                 (pass == null || pass.isBlank()) ? null : pass,

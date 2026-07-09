@@ -39,8 +39,16 @@ public class AppProperties {
     private String aifLogin;
     /** Mot de passe AIF (jamais expose au front). */
     private String aifPassword;
-    /** Si vrai, on accepte les certificats TLS auto-signes du serveur AIF. */
+    /** Si vrai, on accepte les certificats TLS auto-signes du serveur AIF.
+     *  Deprecie : preferer {@code aifCaCertPath} (validation par certificat epingle). */
     private boolean aifTrustAllCerts = true;
+    /**
+     * Chemin d'un certificat AIF (PEM/DER) a epingler dans le magasin de confiance.
+     * Renseigne, la connexion TLS VALIDE le certificat presente par AIF contre ce
+     * seul certificat (support securise des serveurs a certificat auto-signe).
+     * Vide, on utilise le magasin de confiance systeme (validation standard).
+     */
+    private String aifCaCertPath;
 
     /** Adresse expediteur pour les e-mails sortants (diffusion catalogue). */
     private String mailFrom = "no-reply@afriland.cm";
@@ -129,6 +137,12 @@ public class AppProperties {
     public void setAifTrustAllCerts(boolean aifTrustAllCerts) {
         this.aifTrustAllCerts = aifTrustAllCerts;
     }
+
+    public String getAifCaCertPath() {
+        if (aifCaCertPath != null && aifCaCertPath.isBlank()) return null;
+        return aifCaCertPath;
+    }
+    public void setAifCaCertPath(String aifCaCertPath) { this.aifCaCertPath = aifCaCertPath; }
 
     public String getMailFrom() { return mailFrom; }
     public void setMailFrom(String mailFrom) { this.mailFrom = mailFrom; }

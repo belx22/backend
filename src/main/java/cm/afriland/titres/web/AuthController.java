@@ -55,7 +55,7 @@ public class AuthController {
     private static final Logger log = LoggerFactory.getLogger(AuthController.class);
 
     private static final int MAX_LOGIN_ATTEMPTS = 5;
-    private static final long LOCK_DURATION_SECS = 15 * 60;
+    private static final long LOCK_DURATION_SECS = 15L * 60;
 
     /** Quota /refresh par IP et par minute — large car protege par cookie HttpOnly. */
     private static final int REFRESH_RATE_LIMIT = 60;

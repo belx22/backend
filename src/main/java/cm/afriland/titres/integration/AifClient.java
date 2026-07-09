@@ -5,17 +5,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.security.KeyManagementException;
-import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.Base64;
 
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLParameters;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,7 +39,7 @@ public class AifClient {
 
     public AifClient(AppProperties props) {
         this.props = props;
-        this.http = buildClient(props.isAifTrustAllCerts());
+        this.http = buildClient(props.getAifCaCertPath());
     }
 
     /** Resultat d'un ping AIF — utilise par le badge de statut dans la barre BO. */
@@ -159,30 +153,55 @@ public class AifClient {
     private static final String EMPTY_LIST_JSON = "{\"accounts\":[],\"totalCount\":0}";
 
     /**
-     * Construit un client HTTP avec, selon la configuration, un contexte SSL
-     * qui accepte les certificats auto-signes du serveur AIF interne. A
-     * remplacer en production par un trust-store contenant le certificat AIF.
+     * Construit le client HTTP du serveur AIF.
+     *
+     * <p>La validation TLS est <b>toujours active</b> (protection contre les
+     * attaques de type « man-in-the-middle ») : la seule adaptation possible pour
+     * un serveur AIF a certificat auto-signe est d'<b>epingler</b> ce certificat
+     * via {@code caCertPath}. Le magasin de confiance construit ne contient alors
+     * que ce certificat, et l'identite du serveur est verifiee normalement.
+     * Sans chemin fourni, on s'appuie sur le magasin de confiance systeme
+     * (validation standard).</p>
      */
-    private static HttpClient buildClient(boolean trustAll) {
+    private static HttpClient buildClient(String caCertPath) {
         HttpClient.Builder b = HttpClient.newBuilder().connectTimeout(TIMEOUT);
-        if (trustAll) {
+        if (caCertPath != null) {
             try {
-                SSLContext ctx = SSLContext.getInstance("TLS");
-                ctx.init(null, new TrustManager[]{
-                        new X509TrustManager() {
-                            @Override public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-                            @Override public void checkClientTrusted(X509Certificate[] c, String a) {}
-                            @Override public void checkServerTrusted(X509Certificate[] c, String a) {}
-                        }
-                }, new SecureRandom());
+                SSLContext ctx = pinnedContext(caCertPath);
                 b.sslContext(ctx);
-                SSLParameters params = new SSLParameters();
-                params.setEndpointIdentificationAlgorithm(null);
-                b.sslParameters(params);
-            } catch (NoSuchAlgorithmException | KeyManagementException e) {
-                log.warn("Impossible d'initialiser le SSLContext trust-all : {}", e.getMessage());
+            } catch (Exception e) {
+                // On NE retombe PAS en connexion non validee : mieux vaut une
+                // indisponibilite (degradation gracieuse) qu'un TLS non verifie.
+                log.error("Certificat AIF epingle illisible ({}) : {} — "
+                        + "validation TLS systeme utilisee par defaut.", caCertPath, e.getMessage());
             }
         }
         return b.build();
+    }
+
+    /**
+     * Construit un {@link SSLContext} dont le magasin de confiance ne contient
+     * que le certificat AIF fourni (validation stricte du serveur auto-signe).
+     */
+    private static SSLContext pinnedContext(String caCertPath) throws Exception {
+        java.security.cert.CertificateFactory cf =
+                java.security.cert.CertificateFactory.getInstance("X.509");
+        java.security.cert.Certificate cert;
+        try (java.io.InputStream in = java.nio.file.Files.newInputStream(
+                java.nio.file.Path.of(caCertPath))) {
+            cert = cf.generateCertificate(in);
+        }
+        java.security.KeyStore ks = java.security.KeyStore.getInstance(
+                java.security.KeyStore.getDefaultType());
+        ks.load(null, null);
+        ks.setCertificateEntry("aif", cert);
+
+        javax.net.ssl.TrustManagerFactory tmf = javax.net.ssl.TrustManagerFactory.getInstance(
+                javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(ks);
+
+        SSLContext ctx = SSLContext.getInstance("TLS");
+        ctx.init(null, tmf.getTrustManagers(), new SecureRandom());
+        return ctx;
     }
 }

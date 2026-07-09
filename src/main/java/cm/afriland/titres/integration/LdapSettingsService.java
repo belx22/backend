@@ -42,7 +42,8 @@ public class LdapSettingsService {
 
     private final JdbcTemplate jdbc;
     private final SecretCipher cipher;
-    private volatile LdapSettings cache;
+    private final java.util.concurrent.atomic.AtomicReference<LdapSettings> cache =
+            new java.util.concurrent.atomic.AtomicReference<>();
 
     public LdapSettingsService(JdbcTemplate jdbc, SecretCipher cipher) {
         this.jdbc = jdbc;
@@ -62,7 +63,7 @@ public class LdapSettingsService {
     @PostConstruct
     public void reload() {
         try {
-            this.cache = jdbc.queryForObject(
+            cache.set(jdbc.queryForObject(
                     "SELECT enabled, host, port, ssl, start_tls, base_dn, bind_dn, bind_password_enc, "
                             + "user_search_base, user_search_filter FROM ldap_settings WHERE id = TRUE",
                     (rs, n) -> new LdapSettings(
@@ -75,17 +76,17 @@ public class LdapSettingsService {
                             rs.getString("bind_dn"),
                             cipher.decrypt(rs.getString("bind_password_enc")),
                             rs.getString("user_search_base"),
-                            rs.getString("user_search_filter")));
+                            rs.getString("user_search_filter"))));
         } catch (RuntimeException e) {
             log.warn("Parametres LDAP indisponibles : {}", e.getMessage());
-            this.cache = new LdapSettings(false, null, 389, false, false,
-                    null, null, null, null, "(sAMAccountName={0})");
+            cache.set(new LdapSettings(false, null, 389, false, false,
+                    null, null, null, null, "(sAMAccountName={0})"));
         }
     }
 
     public LdapSettings get() {
-        if (cache == null) reload();
-        return cache;
+        if (cache.get() == null) reload();
+        return cache.get();
     }
 
     /** Met a jour les parametres. {@code newPassword} null = inchange ; "" = efface. */

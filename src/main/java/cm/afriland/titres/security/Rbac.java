@@ -30,8 +30,10 @@ public class Rbac {
     public static final List<String> ROLES = List.of(
             "CLIENT_PP", "CLIENT_PM", "AGENT", "SUPERVISEUR", "ADMIN");
 
-    /** Matrice RBAC en memoire — initialisee aux valeurs par defaut. */
-    private static volatile Map<String, Set<Permission>> matrix = defaultMatrix();
+    /** Matrice RBAC en memoire — initialisee aux valeurs par defaut. Reference
+     *  atomique : chaque rechargement publie une nouvelle map immuable d'un bloc. */
+    private static final java.util.concurrent.atomic.AtomicReference<Map<String, Set<Permission>>> matrix =
+            new java.util.concurrent.atomic.AtomicReference<>(defaultMatrix());
 
     private final JdbcTemplate jdbc;
 
@@ -84,20 +86,20 @@ public class Rbac {
                 m.get(role).add(p);
             }
         }
-        matrix = m;
+        matrix.set(m);
         log.info("Matrice RBAC chargee depuis la base");
     }
 
     /** Indique si un role detient une permission donnee (lecture memoire). */
     public static boolean roleHasPermission(String role, Permission perm) {
-        Set<Permission> perms = matrix.get(role);
+        Set<Permission> perms = matrix.get().get(role);
         return perms != null && perms.contains(perm);
     }
 
     /** Capture la matrice courante : role -> liste triee des noms de permissions. */
     public static Map<String, List<String>> matrixSnapshot() {
         Map<String, List<String>> snapshot = new TreeMap<>();
-        for (Map.Entry<String, Set<Permission>> e : matrix.entrySet()) {
+        for (Map.Entry<String, Set<Permission>> e : matrix.get().entrySet()) {
             List<String> names = new ArrayList<>();
             for (Permission p : e.getValue()) {
                 names.add(p.name());

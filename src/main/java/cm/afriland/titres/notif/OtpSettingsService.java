@@ -29,7 +29,8 @@ public class OtpSettingsService {
 
     private final JdbcTemplate jdbc;
     private final SecretCipher cipher;
-    private volatile OtpSettings cache;
+    private final java.util.concurrent.atomic.AtomicReference<OtpSettings> cache =
+            new java.util.concurrent.atomic.AtomicReference<>();
 
     public OtpSettingsService(JdbcTemplate jdbc, SecretCipher cipher) {
         this.jdbc = jdbc;
@@ -53,7 +54,7 @@ public class OtpSettingsService {
     @PostConstruct
     public void reload() {
         try {
-            this.cache = jdbc.queryForObject(
+            cache.set(jdbc.queryForObject(
                     "SELECT canal, longueur, ttl_secondes, max_tentatives, sms_api_url, "
                             + "sms_api_key_enc, sms_expediteur FROM otp_settings WHERE id = TRUE",
                     (rs, n) -> new OtpSettings(
@@ -63,16 +64,16 @@ public class OtpSettingsService {
                             rs.getInt("max_tentatives"),
                             rs.getString("sms_api_url"),
                             cipher.decrypt(rs.getString("sms_api_key_enc")),
-                            rs.getString("sms_expediteur")));
+                            rs.getString("sms_expediteur"))));
         } catch (RuntimeException e) {
             log.warn("Parametres OTP indisponibles : {}", e.getMessage());
-            this.cache = new OtpSettings("EMAIL", 6, 300, 5, null, null, null);
+            cache.set(new OtpSettings("EMAIL", 6, 300, 5, null, null, null));
         }
     }
 
     public OtpSettings get() {
-        if (cache == null) reload();
-        return cache;
+        if (cache.get() == null) reload();
+        return cache.get();
     }
 
     /** Met a jour les parametres. {@code newApiKey} null => cle conservee. */

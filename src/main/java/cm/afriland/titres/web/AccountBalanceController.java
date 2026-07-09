@@ -39,7 +39,8 @@ public class AccountBalanceController {
     private final AuditService audit;
 
     /** Dernier ping AIF — cache leger partage entre tous les acteurs BO. */
-    private volatile AifClient.PingResult cachedPing;
+    private final java.util.concurrent.atomic.AtomicReference<AifClient.PingResult> cachedPing =
+            new java.util.concurrent.atomic.AtomicReference<>();
     private volatile long cachedPingAt;
 
     public AccountBalanceController(AifClient aif, AuditService audit) {
@@ -84,10 +85,10 @@ public class AccountBalanceController {
         ApiException.ensure(!user.isClient(),
                 "Statut Amplitude reserve au back-office.");
         long now = System.currentTimeMillis();
-        AifClient.PingResult ping = cachedPing;
+        AifClient.PingResult ping = cachedPing.get();
         if (ping == null || now - cachedPingAt > PING_CACHE_MS) {
             ping = aif.ping();
-            cachedPing = ping;
+            cachedPing.set(ping);
             cachedPingAt = now;
         }
         return new HealthResponse(ping.available(), ping.latencyMs(), ping.endpoint());
@@ -164,8 +165,11 @@ public class AccountBalanceController {
 
     /** Le numero de compte doit etre alphanumerique (eventuellement espaces). */
     private static void validateAccountNumber(String accountNumber) {
-        ApiException.ensure(accountNumber != null && accountNumber.length() >= 3,
-                "Numero de compte invalide (minimum 3 caracteres).");
+        // Garde null explicite (throw) avant tout dereferencement : evite tout
+        // risque de NullPointerException si accountNumber est absent.
+        if (accountNumber == null || accountNumber.length() < 3) {
+            throw ApiException.badRequest("Numero de compte invalide (minimum 3 caracteres).");
+        }
         ApiException.ensure(accountNumber.length() <= 40,
                 "Numero de compte trop long.");
         ApiException.ensure(accountNumber.matches("[A-Za-z0-9 ._-]+"),
@@ -173,8 +177,9 @@ public class AccountBalanceController {
     }
 
     private static void validateSegment(String label, String value) {
-        ApiException.ensure(value != null && value.length() >= 1 && value.length() <= 20,
-                "Segment " + label + " invalide.");
+        if (value == null || value.length() < 1 || value.length() > 20) {
+            throw ApiException.badRequest("Segment " + label + " invalide.");
+        }
         ApiException.ensure(value.matches("[A-Za-z0-9._-]+"),
                 "Segment " + label + " invalide.");
     }
