@@ -20,7 +20,6 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -33,20 +32,27 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.client.DefaultResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Tests fonctionnels end-to-end miroir de test_api_v10.py.
  *
  * Chaque test est ordonne et partage l'etat (tokens, identifiants) via des
- * champs d'instance (@TestInstance PER_CLASS). Un PostgreSQL Testcontainers
- * remplace la base de production ; le cookie HttpOnly afb_rt est gere par
- * Apache HttpClient 5 avec un CookieStore persistant.
+ * champs d'instance (@TestInstance PER_CLASS). Le cookie HttpOnly afb_rt est
+ * gere par Apache HttpClient 5 avec un CookieStore persistant.
+ *
+ * <p><b>Base de donnees.</b> Le test cible un PostgreSQL <em>externe</em> (au
+ * lieu de Testcontainers) via {@code TEST_DB_URL/USER/PASSWORD} — par defaut la
+ * base dediee {@code afb_titres_test} du serveur local (port 5433). Elle doit
+ * etre <b>vide</b> au demarrage : Flyway cree le schema et {@code SeedRunner}
+ * insere les comptes + emissions de demonstration (seed uniquement si vide).
+ * Recreation propre :</p>
+ * <pre>
+ * docker exec afb_titres_db psql -U afb_app -d postgres \
+ *   -c "DROP DATABASE IF EXISTS afb_titres_test;" \
+ *   -c "CREATE DATABASE afb_titres_test OWNER afb_app;"
+ * </pre>
  */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
-@Testcontainers
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @SuppressWarnings("unchecked")
@@ -54,13 +60,19 @@ class WorkflowV10Test {
 
     // ─── Infrastructure ───────────────────────────────────────────────────────
 
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>("postgres:16-alpine");
+    /** Lit une variable d'environnement avec repli sur la valeur locale par defaut. */
+    private static String env(String key, String defaultValue) {
+        String v = System.getenv(key);
+        return (v == null || v.isBlank()) ? defaultValue : v;
+    }
 
     @DynamicPropertySource
     static void appProps(DynamicPropertyRegistry r) {
+        // Base PostgreSQL externe dediee aux tests (surchargeable par l'environnement).
+        r.add("spring.datasource.url",
+                () -> env("TEST_DB_URL", "jdbc:postgresql://localhost:5433/afb_titres_test"));
+        r.add("spring.datasource.username", () -> env("TEST_DB_USER", "afb_app"));
+        r.add("spring.datasource.password", () -> env("TEST_DB_PASSWORD", "change_me_db"));
         // Secret JWT valide (>= 32 chars)
         r.add("app.jwt-secret", () -> "test-jwt-secret-au-moins-32-caracteres-long!!");
         // Code OTP fixe pour la demo (aucun SMTP ne sera contacte)
@@ -264,10 +276,13 @@ class WorkflowV10Test {
         assertThat(r.getBody().get("status")).isEqualTo("EN_ATTENTE_ADJUDICATION");
     }
 
-    // ── Adjudication à 2 niveaux (V10) ───────────────────────────────────────
+    // ── Adjudication DIRECTE (un seul niveau) ────────────────────────────────
+    // Le résultat saisi par l'agent (ORDER_RESULT) prend effet immédiatement :
+    // l'ordre est finalisé et le client voit le résultat sans validation
+    // superviseur (cf. OrderController#changeStatus).
 
     @Test @Order(11)
-    void agent_propose_adjudication_statut_reste_EN_ATTENTE() {
+    void agent_saisit_adjudication_directe_TOTALEMENT_RETENU() {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("status", "TOTALEMENT_RETENU");
         payload.put("montantAdjuge", 3_000_000);
@@ -275,30 +290,32 @@ class WorkflowV10Test {
         payload.put("tauxAdjuge", 5.5);
         ResponseEntity<Map> r = POST("/api/v1/orders/" + ordId + "/status", payload, tokAgent);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(r.getBody().get("status")).isEqualTo("EN_ATTENTE_ADJUDICATION");
+        // Adjudication directe : le résultat de l'agent est appliqué et final
+        assertThat(r.getBody().get("status")).isEqualTo("TOTALEMENT_RETENU");
         assertThat(r.getBody().get("resultatPropose")).isEqualTo("TOTALEMENT_RETENU");
     }
 
     @Test @Order(12)
-    void client_ne_voit_pas_resultat_propose_avant_validation() {
+    void client_voit_resultat_immediatement_apres_adjudication() {
         ResponseEntity<Map> r = GET("/api/v1/orders/" + ordId, tokClient);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
-        // scrubForClient masque resultatPropose et montantAdjuge tant que non validé
-        assertThat(r.getBody().get("resultatPropose")).isNull();
-        assertThat(r.getBody().get("montantAdjuge")).isNull();
+        // Le résultat est validé dès sa saisie → immédiatement visible côté client
+        assertThat(r.getBody().get("status")).isEqualTo("TOTALEMENT_RETENU");
+        assertThat(((Number) r.getBody().get("montantAdjuge")).longValue()).isEqualTo(3_000_000L);
     }
 
     @Test @Order(13)
-    void agent_ne_peut_pas_valider_adjudication_403() {
+    void agent_ne_peut_pas_appeler_validate_result_403() {
+        // L'agent n'a pas ORDER_RESULT_VALIDATE : rejet avant tout contrôle d'état
         ResponseEntity<Map> r = POST("/api/v1/orders/" + ordId + "/validate-result", null, tokAgent);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
 
     @Test @Order(14)
-    void superviseur_valide_adjudication_TOTALEMENT_RETENU() {
+    void superviseur_validate_result_400_car_deja_finalise() {
+        // En adjudication directe, aucun résultat n'est « en attente » de validation
         ResponseEntity<Map> r = POST("/api/v1/orders/" + ordId + "/validate-result", null, tokSup);
-        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(r.getBody().get("status")).isEqualTo("TOTALEMENT_RETENU");
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
     @Test @Order(15)
@@ -309,7 +326,7 @@ class WorkflowV10Test {
     }
 
     @Test @Order(16)
-    void client_voit_resultat_apres_validation_superviseur() {
+    void client_voit_montant_adjuge_final() {
         ResponseEntity<Map> r = GET("/api/v1/orders/" + ordId, tokClient);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(r.getBody().get("status")).isEqualTo("TOTALEMENT_RETENU");
@@ -334,7 +351,9 @@ class WorkflowV10Test {
     void admin_liste_utilisateurs_USER_MANAGE() {
         ResponseEntity<Map> r = GET("/api/v1/users", tokAdmin);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(((Number) r.getBody().get("total")).intValue()).isGreaterThanOrEqualTo(5);
+        // /users ne liste que les comptes internes (AGENT, SUPERVISEUR, ADMIN)
+        // → le seed en crée exactement 3.
+        assertThat(((Number) r.getBody().get("total")).intValue()).isGreaterThanOrEqualTo(3);
     }
 
     @Test @Order(19)
