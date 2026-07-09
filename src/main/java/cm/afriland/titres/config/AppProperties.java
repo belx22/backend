@@ -95,7 +95,9 @@ public class AppProperties {
      */
     public String getPrimaryFrontendOrigin() {
         String raw = frontendOrigin == null ? "" : frontendOrigin.trim();
-        String first = raw.split("\\s*,\\s*")[0].trim();
+        // Split sur une virgule simple (pas de \s* autour) puis trim : evite un
+        // motif d'expression reguliere sujet au backtracking (ReDoS).
+        String first = raw.split(",")[0].trim();
         if (first.isEmpty()) first = "http://localhost:4200";
         return first.endsWith("/") ? first.substring(0, first.length() - 1) : first;
     }

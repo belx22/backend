@@ -33,7 +33,10 @@ public class WebConfig implements WebMvcConfigurer {
      *  une virgule (ex. adresse publique + localhost de dev). */
     @Override
     public void addCorsMappings(CorsRegistry registry) {
-        String[] origins = props.getFrontendOrigin().split("\\s*,\\s*");
+        // Split sur une virgule simple puis trim de chaque origine : evite un
+        // motif regex sujet au backtracking (ReDoS) et normalise les espaces.
+        String[] origins = java.util.Arrays.stream(props.getFrontendOrigin().split(","))
+                .map(String::trim).filter(s -> !s.isEmpty()).toArray(String[]::new);
         registry.addMapping("/**")
                 .allowedOrigins(origins)
                 .allowedMethods("GET", "POST", "PATCH", "DELETE", "OPTIONS")

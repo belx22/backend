@@ -625,10 +625,13 @@ public class ClientController {
      * distinct des numeros deja choisis dans le meme onboarding. Remplace l'ancien
      * derive de l'horodatage, qui pouvait collisionner silencieusement.
      */
+    /** Generateur cryptographiquement fort pour les numeros de compte. */
+    private static final java.security.SecureRandom ACCOUNT_RNG = new java.security.SecureRandom();
+
     private String generateUniqueAccount(String... avoid) {
         java.util.Set<String> taboo = java.util.Set.of(avoid);
         for (int i = 0; i < 25; i++) {
-            long n = java.util.concurrent.ThreadLocalRandom.current().nextLong(0, 100_000_000_000L);
+            long n = ACCOUNT_RNG.nextLong(100_000_000_000L);
             String candidate = String.format("037 10001 %011d", n);
             if (taboo.contains(candidate)) {
                 continue;
