@@ -185,6 +185,41 @@ class SelfRegistrationV22Test {
     }
 
     @Test
+    void piece_identite_acceptee_avec_un_type_reconnu() {
+        ResponseEntity<Map> r = POST("/api/v1/registration/dossiers/" + dossierId + "/piece-identite",
+                Map.of("imageBase64", IMG, "cote", "RECTO", "type", "CNI",
+                        "texte", "CARTE NATIONALE D IDENTITE NGONO",
+                        "nettete", 300, "largeur", 1200, "hauteur", 800), tokenPrincipal);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("pieceId")).isNotNull();
+    }
+
+    /**
+     * La detection du type est devenue INDICATIVE : elle peut ne rien reconnaitre.
+     * Le depot doit alors aboutir malgre tout — {@code Map.of()} refusant les
+     * valeurs nulles, un type absent faisait echouer l'envoi (NPE, HTTP 500).
+     */
+    @Test
+    void piece_identite_acceptee_meme_SANS_type_reconnu() {
+        java.util.Map<String, Object> corps = new java.util.HashMap<>();
+        corps.put("imageBase64", IMG);
+        corps.put("cote", "VERSO");
+        corps.put("type", null);                 // l'OCR n'a rien reconnu
+        corps.put("texte", "texte illisible");
+        corps.put("nettete", 120);
+        corps.put("largeur", 900);
+        corps.put("hauteur", 600);
+
+        ResponseEntity<Map> r = POST(
+                "/api/v1/registration/dossiers/" + dossierId + "/piece-identite", corps, tokenPrincipal);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("pieceId")).isNotNull();
+        assertThat(r.getBody().get("verificationStatus")).isEqualTo("EN_ATTENTE");
+    }
+
+    @Test
     void convention_courante_est_publique() {
         ResponseEntity<Map> r = GET("/api/v1/registration/convention?langue=FR", null);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);

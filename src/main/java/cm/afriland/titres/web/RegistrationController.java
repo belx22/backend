@@ -1,6 +1,7 @@
 package cm.afriland.titres.web;
 
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -261,8 +262,15 @@ public class RegistrationController {
 
         audit.log(user.id().toString(), "DEPOT_PIECE_IDENTITE", AuditService.SUCCES,
                 id.toString(), "—");
-        return Map.of("pieceId", pieceId, "type", req.type(), "cote", req.cote(),
-                "verificationStatus", "EN_ATTENTE");
+        // Map.of() REFUSE les valeurs nulles : depuis que le type est facultatif
+        // (detection OCR devenue indicative), il peut l'etre. On construit donc une
+        // map tolerante au null plutot que de faire echouer le depot.
+        Map<String, Object> reponse = new LinkedHashMap<>();
+        reponse.put("pieceId", pieceId);
+        reponse.put("type", req.type());          // peut etre null : purement indicatif
+        reponse.put("cote", req.cote());
+        reponse.put("verificationStatus", "EN_ATTENTE");
+        return reponse;
     }
 
     // ───────────────────────── Convention (public) ──────────────────────────
