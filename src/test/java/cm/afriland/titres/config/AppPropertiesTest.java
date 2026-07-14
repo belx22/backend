@@ -134,8 +134,26 @@ class AppPropertiesTest {
     // ─── valeurs par défaut ───────────────────────────────────────────────────
 
     @Test
-    void accessTokenTtl_defaut_900_secondes() {
-        assertEquals(900L, new AppProperties().getAccessTokenTtl());
+    void accessTokenTtl_defaut_5_minutes() {
+        assertEquals(300L, new AppProperties().getAccessTokenTtl());
+    }
+
+    @Test
+    void sessionIdleTimeout_defaut_15_minutes() {
+        assertEquals(900L, new AppProperties().getSessionIdleTimeout());
+    }
+
+    /**
+     * Invariant de securite : le jeton d'acces doit expirer BIEN AVANT la fenetre
+     * d'inactivite. C'est son renouvellement qui prouve l'activite ; avec deux
+     * durees egales, un utilisateur actif serait deconnecte a tort au moment meme
+     * ou il renouvelle.
+     */
+    @Test
+    void le_jeton_d_acces_expire_bien_avant_la_fenetre_d_inactivite() {
+        AppProperties p = new AppProperties();
+        assertTrue(p.getAccessTokenTtl() * 2 <= p.getSessionIdleTimeout(),
+                "le jeton d'acces doit durer au plus la moitie de la fenetre d'inactivite");
     }
 
     @Test

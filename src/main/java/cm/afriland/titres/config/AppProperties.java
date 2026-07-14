@@ -12,10 +12,31 @@ public class AppProperties {
 
     /** Secret de signature des jetons JWT (HS256) — >= 32 caracteres. */
     private String jwtSecret;
-    /** Duree de vie du jeton d'acces, en secondes (15 min par defaut). */
-    private long accessTokenTtl = 900;
-    /** Duree de vie du jeton de rafraichissement, en secondes (30 jours). */
+    /**
+     * Duree de vie du jeton d'acces, en secondes (5 min).
+     *
+     * <p>Volontairement plus COURTE que la fenetre d'inactivite (15 min) : le
+     * client ne rafraichit qu'a l'expiration de ce jeton, et c'est ce
+     * rafraichissement qui prouve son activite. Avec deux durees egales, un
+     * utilisateur actif serait deconnecte a tort au moment meme ou il renouvelle.</p>
+     */
+    private long accessTokenTtl = 300;
+    /** Duree de vie du jeton de rafraichissement, en secondes (30 jours). Borne
+     *  ABSOLUE : une session ne survit jamais au-dela, meme active. */
     private long refreshTokenTtl = 2_592_000;
+    /**
+     * Fenetre d'INACTIVITE (secondes) au-dela de laquelle la session est morte,
+     * meme si le cookie de rafraichissement est encore valide. 15 minutes.
+     *
+     * <p>Verifiee par le SERVEUR a chaque {@code /auth/refresh} : fermer l'onglet
+     * et revenir une heure plus tard ne doit pas reconnecter automatiquement.
+     * Le garde-fou navigateur (IdleService) ne protege que l'onglet ouvert.</p>
+     *
+     * <p>Doit rester nettement superieure a {@code accessTokenTtl} : un
+     * utilisateur ACTIF ne rafraichit qu'a l'expiration de son jeton d'acces, et
+     * serait sinon deconnecte a tort.</p>
+     */
+    private long sessionIdleTimeout = 900;
     /** Origine autorisee pour le CORS (frontend Angular). */
     private String frontendOrigin = "http://localhost:4200";
     /**
@@ -95,6 +116,11 @@ public class AppProperties {
 
     public long getRefreshTokenTtl() { return refreshTokenTtl; }
     public void setRefreshTokenTtl(long refreshTokenTtl) { this.refreshTokenTtl = refreshTokenTtl; }
+
+    public long getSessionIdleTimeout() { return sessionIdleTimeout; }
+    public void setSessionIdleTimeout(long sessionIdleTimeout) {
+        this.sessionIdleTimeout = sessionIdleTimeout;
+    }
 
     public String getFrontendOrigin() { return frontendOrigin; }
     public void setFrontendOrigin(String frontendOrigin) { this.frontendOrigin = frontendOrigin; }

@@ -73,8 +73,15 @@ app:
   # Stockage des fichiers televerses (captures faciales, pieces justificatives),
   # hors racine web. En production : monter un volume dedie et sauvegarde.
   upload-dir: ${APP_UPLOAD_DIR:./data/uploads}
-  access-token-ttl: ${APP_ACCESS_TOKEN_TTL:900}
+  # Jeton d'acces court (5 min) : c'est son renouvellement qui prouve l'activite
+  # de l'utilisateur. Doit rester bien inferieur a session-idle-timeout.
+  access-token-ttl: ${APP_ACCESS_TOKEN_TTL:300}
+  # Borne ABSOLUE d'une session (30 jours), meme active.
   refresh-token-ttl: ${APP_REFRESH_TOKEN_TTL:2592000}
+  # INACTIVITE : au-dela de 15 min sans activite, la session est morte, meme si le
+  # cookie de rafraichissement est encore valide. Verifie par le SERVEUR a chaque
+  # /auth/refresh — fermer l'onglet et revenir plus tard ne reconnecte plus.
+  session-idle-timeout: ${APP_SESSION_IDLE_TIMEOUT:900}
   frontend-origin: ${APP_FRONTEND_ORIGIN:http://localhost:4200}
   seed-on-start: ${APP_SEED_ON_START:true}
   # Code OTP fixe de demonstration. VIDE PAR DEFAUT : l'OTP est toujours un code

@@ -161,7 +161,9 @@ public class AuthController {
     }
 
     private record RefreshTokenRow(UUID id, UUID userId, boolean revoked, OffsetDateTime expiresAt,
-                                   OffsetDateTime rotatedAt) {
+                                   OffsetDateTime rotatedAt,
+                                   /** Derniere activite reelle : socle de l'expiration par inactivite. */
+                                   OffsetDateTime lastUsedAt) {
     }
 
     // ──────────────────────────── /login ────────────────────────────────────
@@ -395,16 +397,31 @@ public class AuthController {
                 rs.getObject(COL_USER_ID, UUID.class),
                 rs.getBoolean("revoked"),
                 rs.getObject(COL_EXPIRES_AT, OffsetDateTime.class),
-                rs.getObject("rotated_at", OffsetDateTime.class));
+                rs.getObject("rotated_at", OffsetDateTime.class),
+                rs.getObject("last_used_at", OffsetDateTime.class));
 
         RefreshTokenRow row = jdbc.query(
-                        "SELECT id, user_id, revoked, expires_at, rotated_at FROM refresh_tokens "
-                                + "WHERE token_hash = ?",
+                        "SELECT id, user_id, revoked, expires_at, rotated_at, last_used_at "
+                                + "FROM refresh_tokens WHERE token_hash = ?",
                         mapper, tokenHash)
                 .stream().findFirst().orElse(null);
 
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         if (row == null || row.expiresAt().isBefore(now)) {
+            throw sessionExpired();
+        }
+
+        // ── Expiration par INACTIVITE (controlee ici, pas dans le navigateur) ──
+        // Le cookie de rafraichissement vit plusieurs semaines : sans ce controle,
+        // revenir sur le site apres des heures d'absence reconnectait
+        // automatiquement. Passe la fenetre d'inactivite, la session est morte —
+        // et on revoque TOUTE la session, pas seulement ce jeton.
+        OffsetDateTime derniereActivite = row.lastUsedAt() != null ? row.lastUsedAt() : now;
+        if (derniereActivite.isBefore(now.minusSeconds(props.getSessionIdleTimeout()))) {
+            jdbc.update("UPDATE refresh_tokens SET revoked = TRUE, rotated_at = NULL "
+                    + "WHERE user_id = ? AND revoked = FALSE", row.userId());
+            audit.log(row.userId().toString(), "SESSION_EXPIREE_INACTIVITE",
+                    AuditService.SUCCES, "—", clientIp.value());
             throw sessionExpired();
         }
 

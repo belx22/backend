@@ -216,6 +216,9 @@ public class RegistrationController {
     record PieceIdentiteRequest(
             @NotBlank String imageBase64,
             @Pattern(regexp = "RECTO|VERSO", message = "cote invalide (RECTO|VERSO)") String cote,
+            /** Type reconnu par l'OCR, ou null : purement INDICATIF. La detection
+             *  automatique refusait des pieces valables — c'est le back-office qui
+             *  juge, en voyant l'image et le texte lu. */
             @Pattern(regexp = "CNI|PASSEPORT|CARTE_SEJOUR", message = "type de piece invalide")
             String type,
             /** Texte lu sur le document (OCR) — conserve pour le controle du back-office. */
