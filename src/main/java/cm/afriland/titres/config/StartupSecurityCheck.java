@@ -53,9 +53,17 @@ public class StartupSecurityCheck implements ApplicationRunner {
             issues.add("APP_MFA_DEV_CODE est défini — la MFA renvoie un code fixe. Laissez-le vide "
                     + "en production (OTP aléatoire réel).");
         }
+        // NB : le jeu de données de démonstration ne fait plus partie de l'application
+        // livrée (il vit sous src/test). Ce drapeau n'a donc plus d'effet ici ; on le
+        // signale tout de même, car le laisser à true trahit une configuration héritée.
         if (props.isSeedOnStart()) {
-            issues.add("APP_SEED_ON_START=true — des comptes de démonstration à mot de passe connu "
-                    + "peuvent être créés. Mettez false en production.");
+            issues.add("APP_SEED_ON_START=true — sans effet (l'application ne contient plus de "
+                    + "données de démonstration), mais à retirer de votre configuration.");
+        }
+        if (props.getBootstrapAdminPassword() != null
+                && !props.getBootstrapAdminPassword().isBlank()) {
+            issues.add("APP_BOOTSTRAP_ADMIN_PASSWORD est défini — n'utilisez cet amorçage qu'au "
+                    + "tout premier démarrage, puis retirez-le de l'environnement.");
         }
         if (props.isAifTrustAllCerts()) {
             issues.add("APP_AIF_TRUST_ALL_CERTS=true — la validation TLS vers le serveur de soldes "

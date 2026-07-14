@@ -15,25 +15,24 @@ import org.springframework.transaction.annotation.Transactional;
 
 import cm.afriland.titres.config.AppProperties;
 import cm.afriland.titres.security.PasswordService;
-import cm.afriland.titres.security.Rbac;
 
 /**
- * Initialisation de la base apres une reconstruction (volume Docker recree).
+ * Jeu de donnees des TESTS — ne fait pas partie de l'application livree.
  *
- * Jeu de demonstration insere UNIQUEMENT sur base vide (reconstruction du volume) :
- * les 5 comptes utilisateurs de base, un compte-titres JOINT (titulaire +
- * co-signataire, pour la double signature) et 2 emissions PUBLIE (1 BTA, 1 OTA)
- * ouvertes a la souscription. Aucun ordre, dossier client supplementaire ni
- * entree d'audit n'est preinsere.
+ * <p>Cette classe vit sous {@code src/test} : elle n'est jamais empaquetee, et la
+ * plateforme demarre donc sur une base vierge (cf. {@code StartupRunner}, qui se
+ * borne a charger la matrice RBAC et a creer le premier administrateur).</p>
  *
- * En fonctionnement normal (redemarrage du backend sans wipe du volume), ce
- * runner se contente de constater que les utilisateurs existent deja et de
- * recharger la matrice RBAC en memoire.
+ * <p>Elle fournit aux tests fonctionnels les comptes dont ils ont besoin (agent,
+ * superviseur, admin, clients), un compte-titres JOINT pour la double signature,
+ * et deux emissions publiees. Elle n'agit que sur une base vide et lorsque
+ * {@code app.seed-on-start} est explicitement active — ce que seuls les tests
+ * font.</p>
  */
 @Component
-public class SeedRunner implements ApplicationRunner {
+public class DemoSeedRunner implements ApplicationRunner {
 
-    private static final Logger log = LoggerFactory.getLogger(SeedRunner.class);
+    private static final Logger log = LoggerFactory.getLogger(DemoSeedRunner.class);
 
     /** Mot de passe commun aux comptes de demonstration. */
     private static final String DEMO_PASSWORD = "Demo1234";
@@ -41,13 +40,11 @@ public class SeedRunner implements ApplicationRunner {
     private final JdbcTemplate jdbc;
     private final PasswordService password;
     private final AppProperties props;
-    private final Rbac rbac;
 
-    public SeedRunner(JdbcTemplate jdbc, PasswordService password, AppProperties props, Rbac rbac) {
+    public DemoSeedRunner(JdbcTemplate jdbc, PasswordService password, AppProperties props) {
         this.jdbc = jdbc;
         this.password = password;
         this.props = props;
-        this.rbac = rbac;
     }
 
     @Override
@@ -68,8 +65,6 @@ public class SeedRunner implements ApplicationRunner {
                 log.info("Base deja peuplee ({} utilisateur(s)) — insertion ignoree.", count);
             }
         }
-        // Chargement de la matrice RBAC en memoire (table peuplee par la migration V5).
-        rbac.loadMatrix();
     }
 
     /** Insere uniquement les 5 comptes de demonstration. */

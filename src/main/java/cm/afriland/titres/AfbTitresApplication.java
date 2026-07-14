@@ -10,7 +10,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * Backend Spring Boot — Plateforme Valeurs du Tresor CEMAC (Afriland First Bank).
  *
  * Point d'entree : Spring Boot charge la configuration, applique les migrations
- * Flyway, insere le jeu de donnees de demonstration ({@code SeedRunner}) puis
+ * Flyway, charge la matrice RBAC et amorce l'administrateur initial ({@code StartupRunner}) puis
  * demarre le serveur HTTP. L'API est exposee sous le prefixe {@code /api/v1}.
  */
 @SpringBootApplication

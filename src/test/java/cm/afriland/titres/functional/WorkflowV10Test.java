@@ -43,7 +43,7 @@ import org.springframework.web.client.RestTemplate;
  * <p><b>Base de donnees.</b> Le test cible un PostgreSQL <em>externe</em> (au
  * lieu de Testcontainers) via {@code TEST_DB_URL/USER/PASSWORD} — par defaut la
  * base dediee {@code afb_titres_test} du serveur local (port 5433). Elle doit
- * etre <b>vide</b> au demarrage : Flyway cree le schema et {@code SeedRunner}
+ * etre <b>vide</b> au demarrage : Flyway cree le schema et {@code DemoSeedRunner}
  * insere les comptes + emissions de demonstration (seed uniquement si vide).
  * Recreation propre :</p>
  * <pre>

@@ -50,8 +50,23 @@ public class AppProperties {
      */
     public static final String MODE_LOCAL = "LOCAL";
     private String authMode = MODE_LOCAL;
-    /** Insere le jeu de donnees de demonstration si la base est vide. */
-    private boolean seedOnStart = true;
+    /**
+     * Insere le jeu de donnees des TESTS si la base est vide.
+     *
+     * <p>Faux par defaut : l'application livree ne contient aucune donnee de
+     * demonstration. Seuls les tests fonctionnels l'activent.</p>
+     */
+    private boolean seedOnStart = false;
+    /**
+     * Administrateur initial, cree UNIQUEMENT sur une base vierge.
+     *
+     * <p>Sans lui, une base neuve serait inutilisable : aucun compte ne permettrait
+     * de se connecter pour creer les autres. Renseigner
+     * {@code APP_BOOTSTRAP_ADMIN_EMAIL} et {@code APP_BOOTSTRAP_ADMIN_PASSWORD} au
+     * premier demarrage, puis les retirer.</p>
+     */
+    private String bootstrapAdminEmail;
+    private String bootstrapAdminPassword;
     /** Code OTP fixe pour la demo. Vide en production (OTP aleatoire). */
     private String mfaDevCode;
     /** Repertoire de stockage des fichiers televerses (captures faciales, pieces
@@ -151,6 +166,12 @@ public class AppProperties {
 
     public boolean isSeedOnStart() { return seedOnStart; }
     public void setSeedOnStart(boolean seedOnStart) { this.seedOnStart = seedOnStart; }
+
+    public String getBootstrapAdminEmail() { return bootstrapAdminEmail; }
+    public void setBootstrapAdminEmail(String v) { this.bootstrapAdminEmail = v; }
+
+    public String getBootstrapAdminPassword() { return bootstrapAdminPassword; }
+    public void setBootstrapAdminPassword(String v) { this.bootstrapAdminPassword = v; }
 
     public String getMfaDevCode() {
         if (mfaDevCode != null && mfaDevCode.isBlank()) return null;

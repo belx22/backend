@@ -83,7 +83,13 @@ app:
   # /auth/refresh — fermer l'onglet et revenir plus tard ne reconnecte plus.
   session-idle-timeout: ${APP_SESSION_IDLE_TIMEOUT:900}
   frontend-origin: ${APP_FRONTEND_ORIGIN:http://localhost:4200}
-  seed-on-start: ${APP_SEED_ON_START:true}
+  # Jeu de donnees des TESTS. FAUX par defaut : l'application ne contient aucune
+  # donnee de demonstration et demarre sur une base vierge.
+  seed-on-start: ${APP_SEED_ON_START:false}
+  # Administrateur initial, cree UNIQUEMENT si la base ne compte aucun utilisateur.
+  # A renseigner au tout premier demarrage, puis a retirer.
+  bootstrap-admin-email: ${APP_BOOTSTRAP_ADMIN_EMAIL:}
+  bootstrap-admin-password: ${APP_BOOTSTRAP_ADMIN_PASSWORD:}
   # Code OTP fixe de demonstration. VIDE PAR DEFAUT : l'OTP est toujours un code
   # aleatoire reel. Le code fixe n'a de sens que pour une demo hors ligne, et il
   # doit alors etre demande explicitement (APP_MFA_DEV_CODE=123456).

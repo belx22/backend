@@ -37,14 +37,23 @@ services:
       # APP_SEED_ON_START=false, APP_AIF_TRUST_ALL_CERTS=false.
       SPRING_DATASOURCE_PASSWORD: "${SPRING_DATASOURCE_PASSWORD:-change_me_db}"
       APP_JWT_SECRET: "${APP_JWT_SECRET:-dev_secret_a_remplacer_en_production_32_caracteres_min}"
-      APP_ACCESS_TOKEN_TTL: "900"
+      # Le jeton d'acces doit expirer BIEN AVANT la fenetre d'inactivite (15 min) :
+      # c'est son renouvellement qui prouve l'activite. A 900 s, un utilisateur
+      # actif serait deconnecte a tort au moment meme ou il se renouvelle.
+      APP_ACCESS_TOKEN_TTL: "300"
       APP_REFRESH_TOKEN_TTL: "2592000"
       APP_FRONTEND_ORIGIN: "${APP_FRONTEND_ORIGIN:-http://62.169.26.178:33843,http://localhost:4200}"
       # Mode d'authentification : LOCAL (base) | LDAP (Active Directory strict) |
       # LDAP_THEN_LOCAL (annuaire puis repli base). L'annuaire se configure dans
       # l'espace d'administration > LDAP / Active Directory.
       APP_AUTH_MODE: "${APP_AUTH_MODE:-LOCAL}"
-      APP_SEED_ON_START: "${APP_SEED_ON_START:-true}"
+      # Jeu de donnees des TESTS. Desactive : l'application demarre sur une base
+      # vierge, sans aucune donnee de demonstration.
+      APP_SEED_ON_START: "${APP_SEED_ON_START:-false}"
+      # Administrateur initial, cree UNIQUEMENT si la base est vierge. A renseigner
+      # au tout premier demarrage (dans .env), puis a retirer.
+      APP_BOOTSTRAP_ADMIN_EMAIL: "${APP_BOOTSTRAP_ADMIN_EMAIL:-}"
+      APP_BOOTSTRAP_ADMIN_PASSWORD: "${APP_BOOTSTRAP_ADMIN_PASSWORD:-}"
       # Code OTP fixe de demonstration. VIDE PAR DEFAUT : l'OTP est un code
       # aleatoire reel. A ne renseigner (APP_MFA_DEV_CODE=123456 dans .env) que
       # pour une demo hors ligne, jamais en production.
