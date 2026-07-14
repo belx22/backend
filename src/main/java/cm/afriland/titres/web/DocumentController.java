@@ -25,6 +25,7 @@ import cm.afriland.titres.error.ApiException;
 import cm.afriland.titres.security.AuthUser;
 import cm.afriland.titres.security.ClientIp;
 import cm.afriland.titres.security.Permission;
+import cm.afriland.titres.support.AttestationPdfService;
 import cm.afriland.titres.support.PageResponse;
 import cm.afriland.titres.support.Pagination;
 import jakarta.validation.Valid;
@@ -67,10 +68,13 @@ public class DocumentController {
 
     private final JdbcTemplate jdbc;
     private final AuditService audit;
+    private final AttestationPdfService attestations;
 
-    public DocumentController(JdbcTemplate jdbc, AuditService audit) {
+    public DocumentController(JdbcTemplate jdbc, AuditService audit,
+                              AttestationPdfService attestations) {
         this.jdbc = jdbc;
         this.audit = audit;
+        this.attestations = attestations;
     }
 
     record DocumentResponse(
@@ -191,31 +195,69 @@ public class DocumentController {
                     "Incohérence entre le type déclaré et le contenu du fichier.");
         }
 
-        // Reference UNIQUE (DOC-AAAAMMJJ-NNNNNN) basee sur le total : sous
-        // concurrence count(*)+1 peut collisionner -> retente sur conflit.
-        String datePart = OffsetDateTime.now(ZoneOffset.UTC)
-                .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-        String reference = null;
-        UUID newId = null;
-        for (int attempt = 0; attempt < 5 && newId == null; attempt++) {
-            long count = jdbc.queryForObject("SELECT count(*) FROM documents", Long.class);
-            reference = "DOC-" + datePart + "-" + String.format("%06d", count + 1);
-            try {
-                newId = jdbc.queryForObject(
-                        "INSERT INTO documents (reference, type, titre, client_id, uploaded_by, mime_type, "
-                                + "taille, contenu) VALUES (?,?,?,?,?,?,?,?) RETURNING id",
-                        UUID.class, reference, req.type().trim(), req.titre().trim(), req.clientId(),
-                        user.id(), mime, req.taille(), req.contenu());
-            } catch (org.springframework.dao.DataIntegrityViolationException e) {
-                if (attempt == 4) throw e;
-            }
-        }
+        UUID newId = insertDocument(req.type().trim(), req.titre().trim(), req.clientId(),
+                user.id(), mime, req.taille(), req.contenu());
 
-        audit.log(user.id().toString(), "DEPOT_LIVRABLE", AuditService.SUCCES, reference, ip.value());
+        DocumentResponse row = jdbc.query(META + WHERE_DOC_ID, mapper(null), newId)
+                .stream().findFirst()
+                .orElseThrow(() -> ApiException.notFound(DOC_INTROUVABLE));
+
+        audit.log(user.id().toString(), "DEPOT_LIVRABLE", AuditService.SUCCES,
+                row.reference(), ip.value());
+
+        return ResponseEntity.status(HttpStatus.CREATED).body(row);
+    }
+
+    /**
+     * {@code POST /documents/attestation-propriete} — le porteur edite lui-meme
+     * son attestation de propriete de titres (CSFT §M4-F02).
+     *
+     * <p>Self-service : aucune permission {@code DOCUMENT_UPLOAD} n'est requise,
+     * car le client ne televerse rien. Le PDF est genere par le serveur a partir
+     * des positions en base, puis persiste — le client ne peut donc pas influer
+     * sur le contenu d'une attestation qui engage la banque.
+     */
+    @PostMapping("/attestation-propriete")
+    public ResponseEntity<DocumentResponse> attestationPropriete(AuthUser user, ClientIp ip) {
+        ApiException.ensure(user.isClient(),
+                "L'attestation de propriété est éditée par le titulaire du compte-titres.");
+
+        AttestationPdfService.Attestation att = attestations.generer(user.id());
+
+        UUID newId = insertDocument(
+                "ATTESTATION_PROPRIETE", "Attestation de propriété de titres",
+                user.id(), user.id(), "application/pdf", att.taille(), att.dataUri());
+
+        audit.log(user.id().toString(), "GENERATION_LIVRABLE", AuditService.SUCCES,
+                "ATTESTATION_PROPRIETE", ip.value());
 
         DocumentResponse row = jdbc.query(META + WHERE_DOC_ID, mapper(null), newId)
                 .stream().findFirst()
                 .orElseThrow(() -> ApiException.notFound(DOC_INTROUVABLE));
         return ResponseEntity.status(HttpStatus.CREATED).body(row);
+    }
+
+    /**
+     * Insere un livrable et renvoie son identifiant. La reference
+     * {@code DOC-AAAAMMJJ-NNNNNN} derive du total : sous concurrence,
+     * {@code count(*)+1} peut collisionner — on retente alors sur conflit.
+     */
+    private UUID insertDocument(String type, String titre, UUID clientId, UUID uploadedBy,
+                                String mime, String taille, String contenu) {
+        String datePart = OffsetDateTime.now(ZoneOffset.UTC)
+                .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        for (int attempt = 0; attempt < 5; attempt++) {
+            long count = jdbc.queryForObject("SELECT count(*) FROM documents", Long.class);
+            String reference = "DOC-" + datePart + "-" + String.format("%06d", count + 1);
+            try {
+                return jdbc.queryForObject(
+                        "INSERT INTO documents (reference, type, titre, client_id, uploaded_by, "
+                                + "mime_type, taille, contenu) VALUES (?,?,?,?,?,?,?,?) RETURNING id",
+                        UUID.class, reference, type, titre, clientId, uploadedBy, mime, taille, contenu);
+            } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                if (attempt == 4) throw e;
+            }
+        }
+        throw ApiException.conflict("Référence de livrable indisponible, réessayez.");
     }
 }

@@ -22,6 +22,7 @@
         <bouncycastle.version>1.78.1</bouncycastle.version>
         <jjwt.version>0.12.6</jjwt.version>
         <zxing.version>3.5.3</zxing.version>
+        <openpdf.version>1.3.43</openpdf.version>
         <!-- Documentation OpenAPI / Swagger UI (compatible Spring Boot 3.3.x) -->
         <springdoc.version>2.6.0</springdoc.version>
         <!-- Testcontainers récent : docker-java compatible avec Docker Engine 29.x
@@ -119,6 +120,13 @@
             <artifactId>javase</artifactId>
             <version>${zxing.version}</version>
         </dependency>
+        <!-- Generation des livrables PDF (attestation de propriete de titres) -->
+        <dependency>
+            <groupId>com.github.librepdf</groupId>
+            <artifactId>openpdf</artifactId>
+            <version>${openpdf.version}</version>
+        </dependency>
+
         <!-- Tests unitaires — JUnit 5 + Mockito + AssertJ -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
