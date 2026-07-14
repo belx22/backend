@@ -31,6 +31,7 @@ public class AifClient {
     /** Le ping a un budget de temps court pour ne pas bloquer la barre de statut. */
     private static final Duration PING_TIMEOUT = Duration.ofSeconds(4);
 
+    private static final String APPLICATION_JSON = "application/json";
     private final AppProperties props;
     private final HttpClient http;
     /** Etat courant de la connexion AIF, mis a jour a chaque ping. */
@@ -61,7 +62,7 @@ public class AifClient {
         try {
             HttpRequest.Builder req = HttpRequest.newBuilder(URI.create(base))
                     .timeout(PING_TIMEOUT)
-                    .header("Accept", "application/json")
+                    .header("Accept", APPLICATION_JSON)
                     .GET();
             String login = props.getAifLogin();
             String password = props.getAifPassword();
@@ -111,8 +112,8 @@ public class AifClient {
         String url = base.endsWith("/") ? base + path : base + "/" + path;
         HttpRequest.Builder req = HttpRequest.newBuilder(URI.create(url))
                 .timeout(TIMEOUT)
-                .header("Accept", "application/json")
-                .header("Content-Type", "application/json")
+                .header("Accept", APPLICATION_JSON)
+                .header("Content-Type", APPLICATION_JSON)
                 .GET();
 
         String login = props.getAifLogin();

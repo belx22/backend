@@ -24,6 +24,7 @@ import org.springframework.web.servlet.NoHandlerFoundException;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    private static final String CODE_BAD_REQUEST = "BAD_REQUEST";
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     private static ResponseEntity<Object> body(HttpStatus status, String code, String message) {
@@ -42,14 +43,14 @@ public class GlobalExceptionHandler {
                 .map(e -> e.getField() + " : " + e.getDefaultMessage())
                 .findFirst()
                 .orElse("champ invalide");
-        return body(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "Donnees invalides : " + detail);
+        return body(HttpStatus.BAD_REQUEST, CODE_BAD_REQUEST, "Donnees invalides : " + detail);
     }
 
     @ExceptionHandler({HttpMessageNotReadableException.class,
             MissingServletRequestParameterException.class,
             MethodArgumentTypeMismatchException.class})
     public ResponseEntity<Object> handleBadInput(Exception ex) {
-        return body(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "Corps ou parametre de requete invalide.");
+        return body(HttpStatus.BAD_REQUEST, CODE_BAD_REQUEST, "Corps ou parametre de requete invalide.");
     }
 
     @ExceptionHandler(NoHandlerFoundException.class)
@@ -65,7 +66,7 @@ public class GlobalExceptionHandler {
             return body(HttpStatus.CONFLICT, "CONFLICT", "Cette ressource existe deja.");
         }
         log.error("violation d'integrite de donnees", ex);
-        return body(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "Donnees incoherentes ou en conflit.");
+        return body(HttpStatus.BAD_REQUEST, CODE_BAD_REQUEST, "Donnees incoherentes ou en conflit.");
     }
 
     @ExceptionHandler(Exception.class)

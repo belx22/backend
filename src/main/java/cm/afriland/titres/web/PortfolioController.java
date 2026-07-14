@@ -192,7 +192,7 @@ public class PortfolioController {
                 long valNom = getValeurNominale(emId);
                 long montant = row.montantAdjuge() > 0
                         ? row.montantAdjuge()
-                        : (long) volume * valNom;
+                        : volume * valNom;
                 if (montant <= 0) montant = valNom;
 
                 String compteTitres = (row.numeroCompte() != null && !row.numeroCompte().isBlank())

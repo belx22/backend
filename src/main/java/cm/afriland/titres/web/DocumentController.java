@@ -41,6 +41,9 @@ import jakarta.validation.constraints.Size;
 @RequestMapping("/api/v1/documents")
 public class DocumentController {
 
+    private static final String DOC_INTROUVABLE = "Document introuvable.";
+    private static final String WHERE_DOC_ID = " WHERE d.id = ?";
+
     /**
      * Types MIME autorises au televersement. Liste blanche stricte : exclut
      * notamment text/html, image/svg+xml, application/xhtml+xml et tout type
@@ -133,13 +136,13 @@ public class DocumentController {
     /** {@code GET /documents/:id} — detail avec contenu (consultation / telechargement). */
     @GetMapping("/{id}")
     public DocumentResponse get(AuthUser user, @PathVariable UUID id) {
-        DocumentResponse meta = jdbc.query(META + " WHERE d.id = ?", mapper(null), id)
+        DocumentResponse meta = jdbc.query(META + WHERE_DOC_ID, mapper(null), id)
                 .stream().findFirst()
-                .orElseThrow(() -> ApiException.notFound("Document introuvable."));
+                .orElseThrow(() -> ApiException.notFound(DOC_INTROUVABLE));
 
         // Cloisonnement : un client n'accede qu'a ses propres documents.
         if (user.isClient() && !meta.clientId().equals(user.id())) {
-            throw ApiException.notFound("Document introuvable.");
+            throw ApiException.notFound(DOC_INTROUVABLE);
         }
 
         String contenu = jdbc.queryForObject(
@@ -151,9 +154,9 @@ public class DocumentController {
             jdbc.update("UPDATE documents SET telechargements = telechargements + 1 WHERE id = ?", id);
         }
 
-        return jdbc.query(META + " WHERE d.id = ?", mapper(contenu), id)
+        return jdbc.query(META + WHERE_DOC_ID, mapper(contenu), id)
                 .stream().findFirst()
-                .orElseThrow(() -> ApiException.notFound("Document introuvable."));
+                .orElseThrow(() -> ApiException.notFound(DOC_INTROUVABLE));
     }
 
     /** {@code POST /documents} — televersement d'un livrable (DOCUMENT_UPLOAD). */
@@ -210,9 +213,9 @@ public class DocumentController {
 
         audit.log(user.id().toString(), "DEPOT_LIVRABLE", AuditService.SUCCES, reference, ip.value());
 
-        DocumentResponse row = jdbc.query(META + " WHERE d.id = ?", mapper(null), newId)
+        DocumentResponse row = jdbc.query(META + WHERE_DOC_ID, mapper(null), newId)
                 .stream().findFirst()
-                .orElseThrow(() -> ApiException.notFound("Document introuvable."));
+                .orElseThrow(() -> ApiException.notFound(DOC_INTROUVABLE));
         return ResponseEntity.status(HttpStatus.CREATED).body(row);
     }
 }

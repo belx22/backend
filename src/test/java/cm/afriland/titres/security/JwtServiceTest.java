@@ -62,13 +62,19 @@ class JwtServiceTest {
     @Test
     void verify_token_altere_leve_exception() {
         String token = jwtService.issue(UUID.randomUUID(), "agent@afb.cm", "AGENT", false);
-        // Altération déterministe du dernier caractère de la signature : on
-        // choisit un remplacant TOUJOURS différent de l'original (sinon, si le
-        // dernier caractère était deja 'X', le token resterait valide → flaky).
-        char last = token.charAt(token.length() - 1);
-        char repl = (last == 'A') ? 'B' : 'A';
-        String tampered = token.substring(0, token.length() - 1) + repl;
+        // On altère un caractère du PAYLOAD (entre les deux points), pas de la
+        // signature : le dernier caractere base64url de la signature n'encode que
+        // quelques bits utiles, donc plusieurs valeurs decodent vers les memes
+        // octets → l'alteration serait parfois sans effet (flaky). Modifier le
+        // payload change les donnees signees et invalide la signature a coup sur.
+        int p1 = token.indexOf('.');
+        int p2 = token.indexOf('.', p1 + 1);
+        int idx = (p1 + p2) / 2; // au cœur du payload
+        char c = token.charAt(idx);
+        char repl = (c == 'A') ? 'B' : 'A';
+        String tampered = token.substring(0, idx) + repl + token.substring(idx + 1);
 
+        assertNotEquals(token, tampered);
         assertThrows(Exception.class, () -> jwtService.verify(tampered));
     }
 

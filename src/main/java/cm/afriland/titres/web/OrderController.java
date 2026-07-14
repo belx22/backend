@@ -2,6 +2,7 @@ package cm.afriland.titres.web;
 
 import java.time.OffsetDateTime;
 import java.time.Year;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -44,16 +45,30 @@ import jakarta.validation.constraints.Size;
 @RequestMapping("/api/v1/orders")
 public class OrderController {
 
-    private static final Set<String> ORDER_STATUSES = Set.of("SOUMIS", "EN_VERIFICATION",
-            "EN_ATTENTE_ADJUDICATION", "TOTALEMENT_RETENU", "PARTIELLEMENT_RETENU", "NON_RETENU", "ANNULE");
+    /** Noms des statuts d'un ordre — reference unique (evite la duplication de litteraux). */
+    private static final String SOUMIS = "SOUMIS";
+    private static final String EN_VERIFICATION = "EN_VERIFICATION";
+    private static final String EN_ATTENTE_ADJUDICATION = "EN_ATTENTE_ADJUDICATION";
+    private static final String EN_ATTENTE_SIGNATURES = "EN_ATTENTE_SIGNATURES";
+    private static final String TOTALEMENT_RETENU = "TOTALEMENT_RETENU";
+    private static final String PARTIELLEMENT_RETENU = "PARTIELLEMENT_RETENU";
+    private static final String NON_RETENU = "NON_RETENU";
+    private static final String ANNULE = "ANNULE";
+
+    private static final String PREFIXE_AVIS_ORDRE = "Votre ordre ";
+    private static final String COL_STATUS = "status";
+    private static final String AND_CLIENT_ID = " AND o.client_id = ?";
+
+    private static final Set<String> ORDER_STATUSES = Set.of(SOUMIS, EN_VERIFICATION,
+            EN_ATTENTE_ADJUDICATION, TOTALEMENT_RETENU, PARTIELLEMENT_RETENU, NON_RETENU, ANNULE);
 
     /** Statuts finaux : un ordre cloture ne peut plus changer de statut. */
-    private static final Set<String> FINAL_STATUSES = Set.of("ANNULE", "TOTALEMENT_RETENU",
-            "PARTIELLEMENT_RETENU", "NON_RETENU");
+    private static final Set<String> FINAL_STATUSES = Set.of(ANNULE, TOTALEMENT_RETENU,
+            PARTIELLEMENT_RETENU, NON_RETENU);
 
     /** Resultats d'adjudication : saisis par l'agent puis valides par le superviseur. */
-    private static final Set<String> ADJUDICATION_RESULTS = Set.of("TOTALEMENT_RETENU",
-            "PARTIELLEMENT_RETENU", "NON_RETENU");
+    private static final Set<String> ADJUDICATION_RESULTS = Set.of(TOTALEMENT_RETENU,
+            PARTIELLEMENT_RETENU, NON_RETENU);
 
     private static final String SELECT = "SELECT o.id, o.reference, o.emission_id, o.client_id, o.isin, "
             + "o.volume, o.montant, o.taux_soumis, o.status, o.compte_especes, o.compte_titres, o.canal, "
@@ -176,7 +191,7 @@ public class OrderController {
                 rs.getInt("volume"),
                 rs.getLong("montant"),
                 rs.getDouble("taux_soumis"),
-                rs.getString("status"),
+                rs.getString(COL_STATUS),
                 rs.getObject("date_soumission", OffsetDateTime.class),
                 rs.getObject("updated_at", OffsetDateTime.class),
                 rs.getObject("montant_adjuge", Long.class),
@@ -216,13 +231,13 @@ public class OrderController {
         if (user.isClient()) {
             // Cloisonnement : un client est verrouille sur les ordres de SON compte
             // (pour un co-signataire d'un compte joint, le compte du titulaire principal).
-            dataSql.append(" AND o.client_id = ?");
-            countSql.append(" AND o.client_id = ?");
+            dataSql.append(AND_CLIENT_ID);
+            countSql.append(AND_CLIENT_ID);
             args.add(accountId(user.id()));
         } else {
             if (clientId != null) {
-                dataSql.append(" AND o.client_id = ?");
-                countSql.append(" AND o.client_id = ?");
+                dataSql.append(AND_CLIENT_ID);
+                countSql.append(AND_CLIENT_ID);
                 args.add(clientId);
             }
             if (status != null && !status.isEmpty()) {
@@ -303,12 +318,12 @@ public class OrderController {
         String sigStatus = jdbc.query(
                 "SELECT status FROM order_signatures WHERE order_id = ? AND signatory_id = ? "
                         + "AND expires_at > now()",
-                (rs, n) -> rs.getString("status"), id, user.id())
+                (rs, n) -> rs.getString(COL_STATUS), id, user.id())
                 .stream().findFirst().orElse(null);
         ApiException.ensure(sigStatus != null,
                 "Aucune demande de validation en attente pour vous sur cette opération.");
         ApiException.ensure("PENDING".equals(sigStatus), "Vous avez déjà répondu à cette demande.");
-        ApiException.ensure("EN_ATTENTE_SIGNATURES".equals(order.status()),
+        ApiException.ensure(EN_ATTENTE_SIGNATURES.equals(order.status()),
                 "Cette opération n'est plus en attente de signatures.");
 
         UUID account = order.clientId();
@@ -369,7 +384,7 @@ public class OrderController {
         EmissionForOrder emission = jdbc.query(
                         "SELECT status, valeur_nominale_unitaire, montant_minimum, isin "
                                 + "FROM emissions WHERE id = ?",
-                        (rs, n) -> new EmissionForOrder(rs.getString("status"),
+                        (rs, n) -> new EmissionForOrder(rs.getString(COL_STATUS),
                                 rs.getLong("valeur_nominale_unitaire"),
                                 rs.getLong("montant_minimum"), rs.getString("isin")),
                         req.emissionId())
@@ -394,7 +409,7 @@ public class OrderController {
 
         long montant;
         try {
-            montant = Math.multiplyExact((long) req.volume(), emission.vnu());
+            montant = Math.multiplyExact(req.volume(), emission.vnu());
         } catch (ArithmeticException e) {
             throw ApiException.badRequest("Montant de l'ordre hors limites.");
         }
@@ -415,7 +430,7 @@ public class OrderController {
                         nomAffichage(rs.getString("nom"), rs.getString("prenom")), rs.getString("telephone")),
                 account, account);
         boolean joint = signataires.size() > 1;
-        String initialStatus = joint ? "EN_ATTENTE_SIGNATURES" : "SOUMIS";
+        String initialStatus = joint ? EN_ATTENTE_SIGNATURES : SOUMIS;
 
         // Reference UNIQUE a numerotation annuelle. Sous concurrence, count(*)+1
         // peut produire deux fois le meme numero : on retente sur conflit d'unicite.
@@ -444,7 +459,7 @@ public class OrderController {
         if (joint) {
             // Compte joint : une demande de signature (TTL 5 min) par AUTRE signataire ;
             // l'emetteur consent par sa soumission. Chacun est notifie (in-app + e-mail).
-            OffsetDateTime expiry = OffsetDateTime.now().plusMinutes(COSIGN_TTL_MINUTES);
+            OffsetDateTime expiry = OffsetDateTime.now(ZoneOffset.UTC).plusMinutes(COSIGN_TTL_MINUTES);
             int demandes = 0;
             for (SignatoryRow s : signataires) {
                 if (s.id().equals(user.id())) continue;
@@ -458,12 +473,12 @@ public class OrderController {
                 demandes++;
             }
             notifications.notify(user.id(), "INFO", "Ordre en attente de signatures",
-                    "Votre ordre " + reference + " attend la validation de " + demandes
+                    PREFIXE_AVIS_ORDRE + reference + " attend la validation de " + demandes
                             + " co-signataire(s). Il sera transmis une fois toutes les validations obtenues.",
                     reference);
         } else {
             notifications.notify(user.id(), "INFO", "Ordre soumis",
-                    "Votre ordre " + reference + " a été enregistré et est en cours de traitement.",
+                    PREFIXE_AVIS_ORDRE + reference + " a été enregistré et est en cours de traitement.",
                     reference);
         }
         return ResponseEntity.status(HttpStatus.CREATED).body(fetch(newId));
@@ -499,7 +514,7 @@ public class OrderController {
     public OrderResponse cancel(AuthUser user, ClientIp ip, @PathVariable UUID id) {
         OrderResponse order = fetch(id);
         authorizeView(user, order);
-        ApiException.ensure("SOUMIS".equals(order.status()),
+        ApiException.ensure(SOUMIS.equals(order.status()),
                 "seul un ordre au statut « Soumis » peut être annulé");
 
         jdbc.update("UPDATE orders SET status='ANNULE', motif_annulation=?, updated_at=now() WHERE id=?",
@@ -508,7 +523,7 @@ public class OrderController {
         audit.log(user.id().toString(), "ANNULATION_ORDRE", AuditService.SUCCES,
                 order.reference(), ip.value());
         notifications.notify(order.clientId(), "INFO", "Ordre annulé",
-                "Votre ordre " + order.reference() + " a été annulé.", order.reference());
+                PREFIXE_AVIS_ORDRE + order.reference() + " a été annulé.", order.reference());
         return fetch(id);
     }
 
@@ -521,7 +536,7 @@ public class OrderController {
         }
         OrderResponse order = fetch(id);
         authorizeView(user, order);
-        ApiException.ensure("SOUMIS".equals(order.status()),
+        ApiException.ensure(SOUMIS.equals(order.status()),
                 "seul un ordre au statut « Soumis » peut être modifié");
         ApiException.ensure(order.validatedByAgent() == null,
                 "cet ordre a déjà été pris en charge par un agent et ne peut plus être modifié");
@@ -545,7 +560,7 @@ public class OrderController {
     public OrderResponse validate(AuthUser user, ClientIp ip, @PathVariable UUID id) {
         user.require(Permission.ORDER_VALIDATE);
         OrderResponse order = fetch(id);
-        ApiException.ensure("SOUMIS".equals(order.status()) || "EN_VERIFICATION".equals(order.status()),
+        ApiException.ensure(SOUMIS.equals(order.status()) || EN_VERIFICATION.equals(order.status()),
                 "cet ordre ne peut pas être validé dans son statut actuel");
 
         jdbc.update("UPDATE orders SET status='EN_ATTENTE_ADJUDICATION', validated_by_agent=?, "
@@ -554,7 +569,7 @@ public class OrderController {
         audit.log(user.id().toString(), "VALIDATION_ORDRE", AuditService.SUCCES,
                 order.reference(), ip.value());
         notifications.notify(order.clientId(), "INFO", "Ordre validé",
-                "Votre ordre " + order.reference()
+                PREFIXE_AVIS_ORDRE + order.reference()
                         + " est validé et en cours de traitement.", order.reference());
         return fetch(id);
     }
@@ -576,7 +591,7 @@ public class OrderController {
         audit.log(user.id().toString(), "REJET_ORDRE", AuditService.SUCCES,
                 order.reference(), ip.value());
         notifications.notify(order.clientId(), "WARN", "Ordre rejeté",
-                "Votre ordre " + order.reference() + " a été rejeté. Motif : " + req.motif().trim(),
+                PREFIXE_AVIS_ORDRE + order.reference() + " a été rejeté. Motif : " + req.motif().trim(),
                 order.reference());
         return fetch(id);
     }
@@ -604,7 +619,7 @@ public class OrderController {
         // (ORDER_RESULT) prend effet immédiatement et l'ordre est finalisé.
         if (ADJUDICATION_RESULTS.contains(req.status())) {
             user.require(Permission.ORDER_RESULT);
-            ApiException.ensure("EN_ATTENTE_ADJUDICATION".equals(order.status()),
+            ApiException.ensure(EN_ATTENTE_ADJUDICATION.equals(order.status()),
                     "le résultat ne peut être saisi que pour un ordre transmis à l'adjudication");
 
             Long montantAdjuge = req.montantAdjuge() != null ? req.montantAdjuge() : order.montantAdjuge();
@@ -627,21 +642,21 @@ public class OrderController {
                     AuditService.SUCCES, order.reference(), ip.value());
             // Le client est informé sans détail interne (pas de nom de validateur).
             notifications.notify(order.clientId(), "INFO", "Mise à jour de votre ordre",
-                    "Votre ordre " + order.reference() + " a été traité.", order.reference());
+                    PREFIXE_AVIS_ORDRE + order.reference() + " a été traité.", order.reference());
             return fetch(id);
         }
 
         // ── Transitions de traitement immediates (verification, transmission, annulation) ──
         user.require(Permission.ORDER_VALIDATE);
         String motif = order.motifAnnulation();
-        if ("ANNULE".equals(req.status()) && req.motif() != null) {
+        if (ANNULE.equals(req.status()) && req.motif() != null) {
             motif = req.motif().trim();
         }
         UUID validatedBy = order.validatedByAgent();
         OffsetDateTime dateValidation = order.dateValidationAgent();
-        if ("EN_ATTENTE_ADJUDICATION".equals(req.status()) && order.validatedByAgent() == null) {
+        if (EN_ATTENTE_ADJUDICATION.equals(req.status()) && order.validatedByAgent() == null) {
             validatedBy = user.id();
-            dateValidation = OffsetDateTime.now();
+            dateValidation = OffsetDateTime.now(ZoneOffset.UTC);
         }
 
         jdbc.update("UPDATE orders SET status=?, motif_annulation=?, validated_by_agent=?, "
@@ -755,7 +770,7 @@ public class OrderController {
     }
 
     private String nextOrderReference() {
-        String prefix = "ORD-" + Year.now().getValue() + "-";
+        String prefix = "ORD-" + Year.now(ZoneOffset.UTC).getValue() + "-";
         Long count = jdbc.queryForObject(
                 "SELECT count(*) FROM orders WHERE reference LIKE ? || '%'", Long.class, prefix);
         return prefix + String.format("%06d", count + 1);
@@ -799,9 +814,9 @@ public class OrderController {
 
     private static String resultLabel(String status) {
         return switch (status) {
-            case "TOTALEMENT_RETENU" -> "totalement retenu";
-            case "PARTIELLEMENT_RETENU" -> "partiellement retenu";
-            case "NON_RETENU" -> "non retenu";
+            case TOTALEMENT_RETENU -> "totalement retenu";
+            case PARTIELLEMENT_RETENU -> "partiellement retenu";
+            case NON_RETENU -> "non retenu";
             default -> status;
         };
     }

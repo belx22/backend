@@ -32,6 +32,7 @@ import cm.afriland.titres.security.Permission;
 public class AccountBalanceController {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final String ACTION_CONSULT_SOLDE = "CONSULTATION_SOLDE_AIF";
     /** Duree de cache du ping AIF — evite de marteler le serveur a chaque rendu. */
     private static final long PING_CACHE_MS = 15_000L;
 
@@ -107,14 +108,14 @@ public class AccountBalanceController {
         try {
             String json = aif.getJson("/", Map.of("X-SBS-account", accountNumber));
             List<AccountBalance> accounts = parseList(json);
-            audit.log(user.id().toString(), "CONSULTATION_SOLDE_AIF",
+            audit.log(user.id().toString(), ACTION_CONSULT_SOLDE,
                     AuditService.SUCCES, accountNumber, ip.value());
             return new AccountBalanceListResponse(accounts, accounts.size(), BalanceStatus.OK);
         } catch (AifUnavailableException e) {
             // Degradation gracieuse : la plateforme reste fonctionnelle si AIF
             // est indisponible. L'echec est trace, mais la reponse reste 200
             // avec un statut UNAVAILABLE plutot qu'une erreur HTTP.
-            audit.log(user.id().toString(), "CONSULTATION_SOLDE_AIF",
+            audit.log(user.id().toString(), ACTION_CONSULT_SOLDE,
                     AuditService.ECHEC, accountNumber, ip.value());
             return new AccountBalanceListResponse(List.of(), 0, BalanceStatus.UNAVAILABLE);
         }
@@ -140,12 +141,12 @@ public class AccountBalanceController {
         try {
             String json = aif.getJson("/" + accountId, Map.of());
             AccountBalance balance = parseSingle(json);
-            audit.log(user.id().toString(), "CONSULTATION_SOLDE_AIF",
+            audit.log(user.id().toString(), ACTION_CONSULT_SOLDE,
                     AuditService.SUCCES, accountId, ip.value());
             return balance;
         } catch (AifUnavailableException e) {
             // Degradation gracieuse : on renvoie un detail vide plutot qu'une erreur HTTP.
-            audit.log(user.id().toString(), "CONSULTATION_SOLDE_AIF",
+            audit.log(user.id().toString(), ACTION_CONSULT_SOLDE,
                     AuditService.ECHEC, accountId, ip.value());
             return new AccountBalance(accountId, branch, currency, account, suffix,
                     null, null, null, null, null, null);
@@ -177,7 +178,7 @@ public class AccountBalanceController {
     }
 
     private static void validateSegment(String label, String value) {
-        if (value == null || value.length() < 1 || value.length() > 20) {
+        if (value == null || value.isEmpty() || value.length() > 20) {
             throw ApiException.badRequest("Segment " + label + " invalide.");
         }
         ApiException.ensure(value.matches("[A-Za-z0-9._-]+"),

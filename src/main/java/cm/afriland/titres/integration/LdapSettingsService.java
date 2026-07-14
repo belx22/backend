@@ -40,6 +40,7 @@ public class LdapSettingsService {
 
     private static final Logger log = LoggerFactory.getLogger(LdapSettingsService.class);
 
+    private static final String DEFAULT_USER_FILTER = "(sAMAccountName={0})";
     private final JdbcTemplate jdbc;
     private final SecretCipher cipher;
     private final java.util.concurrent.atomic.AtomicReference<LdapSettings> cache =
@@ -80,7 +81,7 @@ public class LdapSettingsService {
         } catch (RuntimeException e) {
             log.warn("Parametres LDAP indisponibles : {}", e.getMessage());
             cache.set(new LdapSettings(false, null, 389, false, false,
-                    null, null, null, null, "(sAMAccountName={0})"));
+                    null, null, null, null, DEFAULT_USER_FILTER));
         }
     }
 
@@ -108,7 +109,7 @@ public class LdapSettingsService {
                 trimToNull(baseDn), trimToNull(bindDn), passwordEnc,
                 trimToNull(userSearchBase),
                 userSearchFilter == null || userSearchFilter.isBlank()
-                        ? "(sAMAccountName={0})" : userSearchFilter.trim(),
+                        ? DEFAULT_USER_FILTER : userSearchFilter.trim(),
                 adminId);
         reload();
     }
@@ -173,7 +174,7 @@ public class LdapSettingsService {
             sc.setCountLimit(1);
             sc.setReturningAttributes(new String[0]);
             String filter = (s.userSearchFilter() == null || s.userSearchFilter().isBlank())
-                    ? "(sAMAccountName={0})" : s.userSearchFilter();
+                    ? DEFAULT_USER_FILTER : s.userSearchFilter();
             NamingEnumeration<SearchResult> res =
                     ctx.search(searchBase, filter, new Object[]{ identifier }, sc);
             String userDn = res.hasMore() ? res.next().getNameInNamespace() : null;

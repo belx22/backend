@@ -49,6 +49,12 @@ public class EmissionController {
     private static final Set<String> PAYS = Set.of("CMR", "GAB", "CGO", "TCD", "RCA", "GNQ");
     private static final Set<String> MODES = Set.of("PRIX", "TAUX");
 
+    private static final String STATUT_PUBLIE = "PUBLIE";
+    private static final String STATUT_BROUILLON = "BROUILLON";
+    /** Fragments HTML du tableau de l'avis — reutilises lors de la generation. */
+    private static final String TD_RIGHT = "<td style=\"text-align:right;\">";
+    private static final String TD_TR_CLOSE = "</td></tr>";
+
     /** Selection avec jointures pour resoudre les noms lisibles des acteurs. */
     private static final String SELECT = "SELECT e.id, e.code, e.isin, e.libelle, e.nature, e.pays_code, "
             + "e.date_emission, e.ouverture_souscription, e.fermeture_souscription, e.date_echeance, "
@@ -204,7 +210,7 @@ public class EmissionController {
     public EmissionResponse get(OptionalAuthUser auth, @PathVariable UUID id) {
         EmissionResponse emission = fetch(id);
         boolean staff = auth.isPresent() && Rbac.isStaff(auth.value().role());
-        if (!staff && !"PUBLIE".equals(emission.status())) {
+        if (!staff && !STATUT_PUBLIE.equals(emission.status())) {
             throw ApiException.notFound("Émission introuvable.");
         }
         return emission;
@@ -254,7 +260,7 @@ public class EmissionController {
                                    @Valid @RequestBody CreateEmissionRequest req) {
         user.require(Permission.EMISSION_CREATE);
         EmissionResponse current = fetch(id);
-        ApiException.ensure("BROUILLON".equals(current.status()) || "PUBLIE".equals(current.status()),
+        ApiException.ensure(STATUT_BROUILLON.equals(current.status()) || STATUT_PUBLIE.equals(current.status()),
                 "seule une fiche en brouillon ou publiée peut être modifiée");
         validate(req);
 
@@ -293,12 +299,12 @@ public class EmissionController {
     public EmissionResponse publish(AuthUser user, ClientIp ip, @PathVariable UUID id) {
         user.require(Permission.EMISSION_CREATE);
         EmissionResponse current = fetch(id);
-        ApiException.ensure("BROUILLON".equals(current.status()),
+        ApiException.ensure(STATUT_BROUILLON.equals(current.status()),
                 "seule une fiche en brouillon peut être publiée");
         // La date limite de souscription doit être dans le futur : sinon l'émission
         // serait immédiatement clôturée (souscription déjà fermée). On bloque avec
         // un message explicite plutôt que de publier puis clôturer aussitôt.
-        ApiException.ensure(current.fermetureSouscription().isAfter(OffsetDateTime.now()),
+        ApiException.ensure(current.fermetureSouscription().isAfter(OffsetDateTime.now(java.time.ZoneOffset.UTC)),
                 "la date limite de souscription est déjà dépassée : modifiez-la (dans le futur) avant de publier");
         jdbc.update("UPDATE emissions SET status='PUBLIE', validated_by=?, date_validation=now(), "
                 + "updated_at=now() WHERE id=?", user.id(), id);
@@ -338,7 +344,7 @@ public class EmissionController {
                                    @Valid @RequestBody RejectEmissionRequest req) {
         user.require(Permission.EMISSION_VALIDATE);
         EmissionResponse current = fetch(id);
-        ApiException.ensure("BROUILLON".equals(current.status()),
+        ApiException.ensure(STATUT_BROUILLON.equals(current.status()),
                 "seule une fiche en brouillon peut être rejetée");
         jdbc.update("UPDATE emissions SET rejection_motif=?, rejected_by=?, rejected_at=now(), "
                 + "validated_by=NULL, date_validation=NULL, updated_at=now() WHERE id=?",
@@ -353,7 +359,7 @@ public class EmissionController {
     public EmissionResponse close(AuthUser user, ClientIp ip, @PathVariable UUID id) {
         user.require(Permission.EMISSION_VALIDATE);
         EmissionResponse current = fetch(id);
-        ApiException.ensure("PUBLIE".equals(current.status()),
+        ApiException.ensure(STATUT_PUBLIE.equals(current.status()),
                 "seule une fiche publiée peut être clôturée");
         jdbc.update("UPDATE emissions SET status='CLOTURE', updated_at=now() WHERE id=?", id);
         EmissionResponse row = fetch(id);
@@ -379,7 +385,7 @@ public class EmissionController {
     public ResponseEntity<Void> delete(AuthUser user, ClientIp ip, @PathVariable UUID id) {
         user.require(Permission.EMISSION_DELETE);
         EmissionResponse current = fetch(id);
-        ApiException.ensure("BROUILLON".equals(current.status()),
+        ApiException.ensure(STATUT_BROUILLON.equals(current.status()),
                 "seule une fiche en brouillon peut être supprimée");
         jdbc.update("DELETE FROM emissions WHERE id = ?", id);
         audit.log(user.id().toString(), "SUPPRESSION_EMISSION", AuditService.SUCCES,
@@ -492,19 +498,19 @@ public class EmissionController {
                     .append(" &middot; ISIN ").append(escape(e.isin())).append("</div>")
                     .append("<table style=\"width:100%;margin-top:10px;font-size:13px;border-collapse:collapse;\">")
                     .append("<tr><td style=\"color:#6b7a94;padding:2px 0;\">Date d'emission</td>")
-                    .append("<td style=\"text-align:right;\">").append(e.dateEmission()).append("</td></tr>")
+                    .append(TD_RIGHT).append(e.dateEmission()).append(TD_TR_CLOSE)
                     .append("<tr><td style=\"color:#6b7a94;padding:2px 0;\">Date d'echeance</td>")
-                    .append("<td style=\"text-align:right;\">").append(e.dateEcheance()).append("</td></tr>")
+                    .append(TD_RIGHT).append(e.dateEcheance()).append(TD_TR_CLOSE)
                     .append("<tr><td style=\"color:#6b7a94;padding:2px 0;\">Fermeture souscription</td>")
-                    .append("<td style=\"text-align:right;\">").append(e.fermetureSouscription()).append("</td></tr>")
+                    .append(TD_RIGHT).append(e.fermetureSouscription()).append(TD_TR_CLOSE)
                     .append("<tr><td style=\"color:#6b7a94;padding:2px 0;\">Montant global</td>")
                     .append("<td style=\"text-align:right;font-weight:600;\">")
                     .append(formatMoney(e.montantGlobal())).append(" FCFA</td></tr>")
                     .append("<tr><td style=\"color:#6b7a94;padding:2px 0;\">Montant minimum</td>")
-                    .append("<td style=\"text-align:right;\">")
+                    .append(TD_RIGHT)
                     .append(formatMoney(e.montantMinimum())).append(" FCFA</td></tr>")
                     .append("<tr><td style=\"color:#6b7a94;padding:2px 0;\">Taux nominal</td>")
-                    .append("<td style=\"text-align:right;\">").append(e.tauxNominal()).append(" %</td></tr>")
+                    .append(TD_RIGHT).append(e.tauxNominal()).append(" %</td></tr>")
                     .append("</table></div>");
         }
 

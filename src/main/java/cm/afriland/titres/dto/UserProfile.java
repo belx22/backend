@@ -23,12 +23,18 @@ public record UserProfile(
         String categorie,
         String typeCompte,
         String telephone,
-        boolean mustChangePassword) {
+        boolean mustChangePassword,
+        /**
+         * Vrai si l'utilisateur participe a un compte-titres a plusieurs signataires
+         * (titulaire d'un compte JOINT/INDIVIS, ou co-signataire rattache a un tel
+         * compte). Pilote l'affichage du menu « Validations » cote client.
+         */
+        boolean compteJoint) {
 
     /** Copie du profil dont le solde est efface — destinee aux reponses adressees aux clients. */
     public UserProfile withoutBalance() {
         return new UserProfile(id, nom, prenom, email, role, statut,
                 compteTitres, compteEspeces, null, categorie, typeCompte, telephone,
-                mustChangePassword);
+                mustChangePassword, compteJoint);
     }
 }

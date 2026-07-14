@@ -26,6 +26,7 @@ import cm.afriland.titres.security.AuthUser;
 import cm.afriland.titres.security.ClientIp;
 import cm.afriland.titres.security.PasswordService;
 import cm.afriland.titres.security.Permission;
+import cm.afriland.titres.security.Rbac;
 import cm.afriland.titres.security.Tokens;
 import cm.afriland.titres.support.PageResponse;
 import cm.afriland.titres.support.Pagination;
@@ -41,9 +42,13 @@ import jakarta.validation.constraints.Size;
 @RequestMapping("/api/v1/users")
 public class UserController {
 
-    private static final Set<String> ROLES = Set.of("CLIENT_PP", "CLIENT_PM", "AGENT",
-            "SUPERVISEUR", "ADMIN");
+    private static final Set<String> ROLES = Set.of(Rbac.CLIENT_PP, Rbac.CLIENT_PM, Rbac.AGENT,
+            Rbac.SUPERVISEUR, Rbac.ADMIN);
     private static final String INTERNAL_ROLES = "('AGENT','SUPERVISEUR','ADMIN')";
+    /** Selection d'un utilisateur par identifiant — reutilisee par plusieurs endpoints. */
+    private static final String SELECT_USER_BY_ID =
+            "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?";
+    private static final String COMPTE_INTROUVABLE = "Compte introuvable.";
 
     private final JdbcTemplate jdbc;
     private final PasswordService password;
@@ -107,9 +112,9 @@ public class UserController {
 
         // Un agent ne peut pas creer de comptes a privileges superieurs aux siens.
         Set<String> allowed = switch (creator.role()) {
-            case "ADMIN" -> ROLES;
-            case "SUPERVISEUR" -> Set.of("CLIENT_PP", "CLIENT_PM", "AGENT", "SUPERVISEUR");
-            case "AGENT" -> Set.of("CLIENT_PP", "CLIENT_PM", "AGENT");
+            case Rbac.ADMIN -> ROLES;
+            case Rbac.SUPERVISEUR -> Set.of(Rbac.CLIENT_PP, Rbac.CLIENT_PM, Rbac.AGENT, Rbac.SUPERVISEUR);
+            case Rbac.AGENT -> Set.of(Rbac.CLIENT_PP, Rbac.CLIENT_PM, Rbac.AGENT);
             default -> Set.of();
         };
         if (!allowed.contains(role)) {
@@ -144,7 +149,7 @@ public class UserController {
     @PatchMapping("/{id}")
     public UserProfile update(AuthUser admin, ClientIp ip, @PathVariable UUID id,
                               @Valid @RequestBody UpdateUserRequest req) {
-        if (!"ADMIN".equals(admin.role())) {
+        if (!Rbac.ADMIN.equals(admin.role())) {
             throw ApiException.forbidden(
                     "Seul un administrateur peut modifier un profil utilisateur.");
         }
@@ -154,9 +159,9 @@ public class UserController {
         }
 
         UserRow current = jdbc.query(
-                        "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?", UserRow.MAPPER, id)
+                        SELECT_USER_BY_ID, UserRow.MAPPER, id)
                 .stream().findFirst()
-                .orElseThrow(() -> ApiException.notFound("Compte introuvable."));
+                .orElseThrow(() -> ApiException.notFound(COMPTE_INTROUVABLE));
 
         String nom = req.nom() != null ? req.nom().trim() : current.nom();
         String prenom = req.prenom() != null ? req.prenom().trim() : current.prenom();
@@ -171,7 +176,7 @@ public class UserController {
                 nom, prenom, email, statut, compteTitres, compteEspeces, id);
 
         UserRow updated = jdbc.queryForObject(
-                "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?", UserRow.MAPPER, id);
+                SELECT_USER_BY_ID, UserRow.MAPPER, id);
         audit.log(admin.id().toString(), "MODIFICATION_COMPTE", AuditService.SUCCES,
                 updated.email(), ip.value());
         return updated.toProfile();
@@ -193,14 +198,14 @@ public class UserController {
     public java.util.Map<String, Object> resetPassword(AuthUser admin, ClientIp ip,
                                                         @PathVariable UUID id,
                                                         @RequestBody(required = false) ResetPasswordRequest req) {
-        if (!"ADMIN".equals(admin.role())) {
+        if (!Rbac.ADMIN.equals(admin.role())) {
             throw ApiException.forbidden(
                     "Seul un administrateur peut réinitialiser un mot de passe.");
         }
         UserRow target = jdbc.query(
-                        "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?", UserRow.MAPPER, id)
+                        SELECT_USER_BY_ID, UserRow.MAPPER, id)
                 .stream().findFirst()
-                .orElseThrow(() -> ApiException.notFound("Compte introuvable."));
+                .orElseThrow(() -> ApiException.notFound(COMPTE_INTROUVABLE));
 
         String chosen = req == null ? null : trimToNull(req.password());
         if (chosen != null) {
@@ -239,7 +244,7 @@ public class UserController {
                     return m;
                 }, id);
         if (row == null) {
-            throw ApiException.notFound("Compte introuvable.");
+            throw ApiException.notFound(COMPTE_INTROUVABLE);
         }
         boolean must = Boolean.TRUE.equals(row.get("must"));
         String enc = (String) row.get("enc");
@@ -268,18 +273,18 @@ public class UserController {
      */
     @DeleteMapping("/{id}")
     public java.util.Map<String, Object> delete(AuthUser admin, ClientIp ip, @PathVariable UUID id) {
-        if (!"ADMIN".equals(admin.role())) {
+        if (!Rbac.ADMIN.equals(admin.role())) {
             throw ApiException.forbidden("Seul un administrateur peut supprimer un compte.");
         }
         if (admin.id().equals(id)) {
             throw ApiException.badRequest("Vous ne pouvez pas supprimer votre propre compte.");
         }
         UserRow target = jdbc.query(
-                        "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?", UserRow.MAPPER, id)
+                        SELECT_USER_BY_ID, UserRow.MAPPER, id)
                 .stream().findFirst()
-                .orElseThrow(() -> ApiException.notFound("Compte introuvable."));
+                .orElseThrow(() -> ApiException.notFound(COMPTE_INTROUVABLE));
 
-        if ("ADMIN".equals(target.role())) {
+        if (Rbac.ADMIN.equals(target.role())) {
             Long actifs = jdbc.queryForObject(
                     "SELECT count(*) FROM users WHERE role = 'ADMIN' AND statut = 'ACTIF'", Long.class);
             ApiException.ensure(actifs != null && actifs > 1,

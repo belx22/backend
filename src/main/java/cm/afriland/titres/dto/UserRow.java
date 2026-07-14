@@ -25,12 +25,14 @@ public record UserRow(
         String telephone,
         boolean mustChangePassword,
         int failedLoginAttempts,
-        OffsetDateTime lockedUntil) {
+        OffsetDateTime lockedUntil,
+        /** Titulaire principal du compte-titres si cet utilisateur est co-signataire. */
+        UUID accountHolderId) {
 
     /** Colonnes {@code users} — reutilisees par toutes les requetes SELECT. */
     public static final String COLUMNS = "id, email, password_hash, role, nom, prenom, statut, "
             + "compte_titres, compte_especes, solde, categorie, type_compte, telephone, "
-            + "must_change_password, failed_login_attempts, locked_until";
+            + "must_change_password, failed_login_attempts, locked_until, account_holder_id";
 
     public static final RowMapper<UserRow> MAPPER = (rs, rowNum) -> new UserRow(
             rs.getObject("id", UUID.class),
@@ -48,12 +50,27 @@ public record UserRow(
             rs.getString("telephone"),
             rs.getBoolean("must_change_password"),
             rs.getInt("failed_login_attempts"),
-            rs.getObject("locked_until", OffsetDateTime.class));
+            rs.getObject("locked_until", OffsetDateTime.class),
+            rs.getObject("account_holder_id", UUID.class));
+
+    /**
+     * Vrai si l'utilisateur participe a un compte-titres a plusieurs signataires.
+     *
+     * <p>Deux cas, et le second est facile a oublier : le titulaire principal, dont
+     * {@code type_compte} vaut JOINT ou INDIVIS ; et le <b>co-signataire</b>, dont
+     * le compte propre ne porte aucun {@code type_compte} mais qui est rattache au
+     * titulaire par {@code account_holder_id}. Or c'est precisement lui que l'on
+     * sollicite pour valider les ordres.</p>
+     */
+    public boolean compteJoint() {
+        return accountHolderId != null
+                || "JOINT".equals(typeCompte) || "INDIVIS".equals(typeCompte);
+    }
 
     /** Projection vers le profil public (sans empreinte de mot de passe). */
     public UserProfile toProfile() {
         return new UserProfile(id, nom, prenom, email, role, statut,
                 compteTitres, compteEspeces, solde, categorie, typeCompte, telephone,
-                mustChangePassword);
+                mustChangePassword, compteJoint());
     }
 }

@@ -8,9 +8,12 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
 
 import java.util.Map;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -194,5 +197,262 @@ class MailSettingsServiceTest {
         String html = service.brand("x");
         assertTrue(html.startsWith("<div"));
         assertTrue(html.endsWith("</div>"));
+    }
+
+    // ─── reload() — chemin nominal (le RowMapper est reellement execute) ──────
+
+    /**
+     * Branche le vrai {@code RowMapper} sur un {@link java.sql.ResultSet} simule :
+     * stuber {@code queryForObject} court-circuiterait le mapper, laissant ses
+     * lignes (et {@code decryptPasswordSafely}) non couvertes.
+     */
+    private void simulerLigneMail(String passwordEnc, String logoUrl, String signature)
+            throws java.sql.SQLException {
+        java.sql.ResultSet rs = mock(java.sql.ResultSet.class);
+        when(rs.getString("host")).thenReturn("smtp.afriland.cm");
+        when(rs.getInt("port")).thenReturn(587);
+        when(rs.getString("username")).thenReturn("dft@afriland.cm");
+        when(rs.getString("password_enc")).thenReturn(passwordEnc);
+        when(rs.getString("from_address")).thenReturn("no-reply@afriland.cm");
+        when(rs.getString("from_name")).thenReturn("Afriland DFT");
+        when(rs.getBoolean("auth")).thenReturn(true);
+        when(rs.getBoolean("starttls")).thenReturn(true);
+        when(rs.getBoolean("enabled")).thenReturn(true);
+        when(rs.getString("logo_url")).thenReturn(logoUrl);
+        when(rs.getString("signature")).thenReturn(signature);
+        when(jdbc.queryForObject(anyString(), any(RowMapper.class)))
+                .thenAnswer(inv -> inv.getArgument(1, RowMapper.class).mapRow(rs, 1));
+        lenient().when(props.hasSmtpEnvConfig()).thenReturn(false);
+    }
+
+    @Test
+    void reload_lit_la_configuration_et_dechiffre_le_mot_de_passe() throws java.sql.SQLException {
+        simulerLigneMail("chiffre", "https://cdn/logo.png", "Service DFT");
+        when(cipher.decrypt("chiffre")).thenReturn("motdepasse");
+
+        service.reload();
+        var s = service.get();
+
+        assertEquals("smtp.afriland.cm", s.host());
+        assertEquals(587, s.port());
+        assertEquals("motdepasse", s.password());
+        assertEquals("https://cdn/logo.png", s.logoUrl());
+        assertEquals("Service DFT", s.signature());
+        assertTrue(s.usable());
+    }
+
+    /**
+     * Secret de chiffrement change : le mot de passe devient illisible. Le reste
+     * de la configuration doit rester charge, avec un mot de passe null.
+     */
+    @Test
+    void reload_tolere_un_mot_de_passe_indechiffrable() throws java.sql.SQLException {
+        simulerLigneMail("chiffre-avec-ancien-secret", null, null);
+        when(cipher.decrypt(anyString())).thenThrow(new RuntimeException("cle invalide"));
+
+        service.reload();
+        var s = service.get();
+
+        assertEquals("smtp.afriland.cm", s.host());
+        assertNull(s.password());
+        // auth=true sans mot de passe -> envoi impossible tant qu'il n'est pas re-saisi.
+        assertFalse(s.usable());
+    }
+
+    @Test
+    void reload_ne_dechiffre_pas_un_mot_de_passe_blanc() throws java.sql.SQLException {
+        simulerLigneMail("   ", null, null);
+
+        service.reload();
+
+        assertNull(service.get().password());
+        verify(cipher, never()).decrypt(anyString());
+    }
+
+    // ─── publicView() / logoUrl() / brand() sur valeurs renseignees ───────────
+
+    @Test
+    void publicView_expose_les_valeurs_non_nulles_sans_le_mot_de_passe()
+            throws java.sql.SQLException {
+        simulerLigneMail("chiffre", "https://cdn/logo.png", "Service DFT");
+        when(cipher.decrypt("chiffre")).thenReturn("motdepasse");
+        service.reload();
+
+        Map<String, Object> v = service.publicView();
+
+        assertEquals("smtp.afriland.cm", v.get("host"));
+        assertEquals("dft@afriland.cm", v.get("username"));
+        assertEquals("https://cdn/logo.png", v.get("logoUrl"));
+        assertEquals("Service DFT", v.get("signature"));
+        assertEquals(true, v.get("passwordSet"));
+        assertFalse(v.containsValue("motdepasse"), "le mot de passe ne doit jamais sortir");
+    }
+
+    @Test
+    void logoUrl_utilise_l_url_configuree_quand_elle_existe() throws java.sql.SQLException {
+        simulerLigneMail(null, "https://cdn/logo.png", null);
+
+        assertEquals("https://cdn/logo.png", service.logoUrl());
+    }
+
+    @Test
+    void brand_ajoute_un_pied_de_page_quand_une_signature_existe() throws java.sql.SQLException {
+        simulerLigneMail(null, "https://cdn/logo.png", "Service DFT");
+
+        String html = service.brand("<p>corps</p>");
+
+        assertTrue(html.contains("Service DFT"));
+        assertTrue(html.contains("border-top:1px solid #eee"));
+        assertTrue(html.contains("<p>corps</p>"));
+    }
+
+    // ─── envOverride() ───────────────────────────────────────────────────────
+
+    /**
+     * Expediteur laisse au defaut : Office365 exige que le « from » soit le compte
+     * authentifie, donc l'adresse de connexion prend le relais.
+     */
+    @Test
+    void envOverride_remplace_l_expediteur_par_defaut_par_le_compte_authentifie() {
+        doThrow(new RuntimeException("DB")).when(jdbc)
+                .queryForObject(anyString(), any(RowMapper.class));
+        when(props.hasSmtpEnvConfig()).thenReturn(true);
+        when(props.getSmtpHost()).thenReturn("smtp.office365.com");
+        when(props.getSmtpPort()).thenReturn(587);
+        when(props.getSmtpUsername()).thenReturn("dft@afriland.cm");
+        when(props.getSmtpPassword()).thenReturn("secret");
+        when(props.getMailFrom()).thenReturn("no-reply@afriland.cm");
+        when(props.getMailFromName()).thenReturn("Afriland");
+        when(props.isSmtpAuth()).thenReturn(true);
+        when(props.isSmtpStarttls()).thenReturn(true);
+
+        var s = service.get();
+
+        assertEquals("dft@afriland.cm", s.fromAddress());
+        assertEquals("smtp.office365.com", s.host());
+        assertTrue(s.enabled());
+        assertTrue(service.isEnvManaged());
+    }
+
+    /** Un expediteur dedie explicite est conserve tel quel. */
+    @Test
+    void envOverride_conserve_un_expediteur_dedie() {
+        doThrow(new RuntimeException("DB")).when(jdbc)
+                .queryForObject(anyString(), any(RowMapper.class));
+        when(props.hasSmtpEnvConfig()).thenReturn(true);
+        when(props.getSmtpHost()).thenReturn("smtp.office365.com");
+        when(props.getSmtpPort()).thenReturn(587);
+        when(props.getSmtpUsername()).thenReturn("compte@afriland.cm");
+        when(props.getSmtpPassword()).thenReturn("secret");
+        when(props.getMailFrom()).thenReturn("titres@afriland.cm");
+        when(props.getMailFromName()).thenReturn("Afriland");
+        when(props.isSmtpAuth()).thenReturn(true);
+        when(props.isSmtpStarttls()).thenReturn(true);
+
+        assertEquals("titres@afriland.cm", service.get().fromAddress());
+    }
+
+    /** Mot de passe d'environnement vide : normalise en null. */
+    @Test
+    void envOverride_normalise_un_mot_de_passe_vide_en_null() {
+        doThrow(new RuntimeException("DB")).when(jdbc)
+                .queryForObject(anyString(), any(RowMapper.class));
+        when(props.hasSmtpEnvConfig()).thenReturn(true);
+        when(props.getSmtpHost()).thenReturn("smtp.ex.com");
+        when(props.getSmtpPort()).thenReturn(587);
+        when(props.getSmtpUsername()).thenReturn("  ");
+        when(props.getSmtpPassword()).thenReturn("   ");
+        when(props.getMailFrom()).thenReturn("titres@afriland.cm");
+        when(props.getMailFromName()).thenReturn("Afriland");
+        when(props.isSmtpAuth()).thenReturn(false);
+        when(props.isSmtpStarttls()).thenReturn(true);
+
+        var s = service.get();
+
+        assertNull(s.password());
+        assertNull(s.username());
+        assertTrue(service.usable());
+    }
+
+    // ─── update() ────────────────────────────────────────────────────────────
+
+    /** update() ne lit jamais le cache : seule la requete de reload() doit echouer. */
+    private void reloadEchoue() {
+        doThrow(new RuntimeException("DB")).when(jdbc)
+                .queryForObject(anyString(), any(RowMapper.class));
+    }
+
+    /** Mot de passe non nul : il est chiffre avant ecriture. */
+    @Test
+    void update_chiffre_le_nouveau_mot_de_passe() {
+        reloadEchoue();
+        when(cipher.encrypt("nouveau")).thenReturn("chiffre");
+        UUID admin = UUID.randomUUID();
+
+        service.update("smtp.ex.com", 587, "user", "nouveau", "from@ex.com", "Nom",
+                true, true, true, "https://cdn/logo.png", "Signature", admin);
+
+        verify(jdbc).update(anyString(), eq("smtp.ex.com"), eq(587), eq("user"), eq("chiffre"),
+                eq("from@ex.com"), eq("Nom"), eq(true), eq(true), eq(true),
+                eq("https://cdn/logo.png"), eq("Signature"), eq(admin));
+    }
+
+    /** Mot de passe nul : l'ancien secret est relu en base et conserve. */
+    @Test
+    void update_conserve_le_mot_de_passe_existant_quand_aucun_n_est_fourni() {
+        reloadEchoue();
+        when(jdbc.query(anyString(), any(ResultSetExtractor.class))).thenReturn("ancien-chiffre");
+        UUID admin = UUID.randomUUID();
+
+        service.update("smtp.ex.com", 587, "user", null, "from@ex.com", "Nom",
+                true, true, true, null, null, admin);
+
+        verify(cipher, never()).encrypt(anyString());
+        verify(jdbc).update(anyString(), eq("smtp.ex.com"), eq(587), eq("user"),
+                eq("ancien-chiffre"), eq("from@ex.com"), eq("Nom"), eq(true), eq(true), eq(true),
+                isNull(), isNull(), eq(admin));
+    }
+
+    /** Les chaines blanches sont normalisees en null (trimToNull). */
+    @Test
+    void update_normalise_les_chaines_blanches_en_null() {
+        reloadEchoue();
+        when(cipher.encrypt("")).thenReturn(null);
+        UUID admin = UUID.randomUUID();
+
+        service.update("  ", 587, "  ", "", "  ", "  ", false, false, false, "  ", "  ", admin);
+
+        verify(jdbc).update(anyString(), isNull(), eq(587), isNull(), isNull(),
+                isNull(), isNull(), eq(false), eq(false), eq(false), isNull(), isNull(), eq(admin));
+    }
+
+    // ─── buildSender() ───────────────────────────────────────────────────────
+
+    @Test
+    void buildSender_reporte_hote_port_et_identifiants() throws java.sql.SQLException {
+        simulerLigneMail("chiffre", null, null);
+        when(cipher.decrypt("chiffre")).thenReturn("motdepasse");
+
+        JavaMailSenderImpl sender = service.buildSender();
+
+        assertEquals("smtp.afriland.cm", sender.getHost());
+        assertEquals(587, sender.getPort());
+        assertEquals("dft@afriland.cm", sender.getUsername());
+        assertEquals("motdepasse", sender.getPassword());
+        assertEquals("true", sender.getJavaMailProperties().get("mail.smtp.auth"));
+        assertEquals("true", sender.getJavaMailProperties().get("mail.smtp.starttls.enable"));
+        assertEquals("10000", sender.getJavaMailProperties().get("mail.smtp.timeout"));
+    }
+
+    /** Sans identifiants, le sender ne doit pas les positionner. */
+    @Test
+    void buildSender_sans_identifiants() {
+        useDbFallback();
+
+        JavaMailSenderImpl sender = service.buildSender();
+
+        assertNull(sender.getUsername());
+        assertNull(sender.getPassword());
+        assertEquals("smtp", sender.getJavaMailProperties().get("mail.transport.protocol"));
     }
 }

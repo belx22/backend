@@ -25,10 +25,17 @@ public class Rbac {
 
     private static final Logger log = LoggerFactory.getLogger(Rbac.class);
 
+    /** Noms des roles — reference unique, reutilisee par les controleurs. */
+    public static final String CLIENT_PP = "CLIENT_PP";
+    public static final String CLIENT_PM = "CLIENT_PM";
+    public static final String AGENT = "AGENT";
+    public static final String SUPERVISEUR = "SUPERVISEUR";
+    public static final String ADMIN = "ADMIN";
+
     /** Les cinq roles du systeme — 4 acteurs metier (le client investisseur
      *  se decline en PP et PM). CSFT §1.3. */
     public static final List<String> ROLES = List.of(
-            "CLIENT_PP", "CLIENT_PM", "AGENT", "SUPERVISEUR", "ADMIN");
+            CLIENT_PP, CLIENT_PM, AGENT, SUPERVISEUR, ADMIN);
 
     /** Matrice RBAC en memoire — initialisee aux valeurs par defaut. Reference
      *  atomique : chaque rechargement publie une nouvelle map immuable d'un bloc. */
@@ -49,18 +56,18 @@ public class Rbac {
         }
         // AGENT — operations courantes : il saisit l'adjudication (ORDER_RESULT)
         // mais ne la valide pas. Pas de gestion des utilisateurs internes ni audit.
-        m.put("AGENT", EnumSet.of(Permission.EMISSION_CREATE, Permission.ORDER_VALIDATE,
+        m.put(AGENT, EnumSet.of(Permission.EMISSION_CREATE, Permission.ORDER_VALIDATE,
                 Permission.ORDER_RESULT, Permission.CLIENT_CREATE, Permission.CLIENT_MANAGE,
                 Permission.DOCUMENT_UPLOAD, Permission.ACCOUNT_BALANCE_READ));
         // SUPERVISEUR — validation : publie les emissions et VALIDE l'adjudication
         // saisie par l'agent (ORDER_RESULT_VALIDATE). Pas d'audit (reserve a l'admin).
-        m.put("SUPERVISEUR", EnumSet.of(Permission.EMISSION_CREATE, Permission.EMISSION_VALIDATE,
+        m.put(SUPERVISEUR, EnumSet.of(Permission.EMISSION_CREATE, Permission.EMISSION_VALIDATE,
                 Permission.ORDER_VALIDATE, Permission.ORDER_RESULT_VALIDATE, Permission.CLIENT_CREATE,
                 Permission.CLIENT_MANAGE, Permission.REPORTING_READ, Permission.CONFIG_MARCHE,
                 Permission.DOCUMENT_UPLOAD, Permission.ACCOUNT_BALANCE_READ));
         // ADMIN — profils internes, audit et configuration. Ne fait AUCUNE
         // adjudication (ni saisie ni validation d'ordres). Peut publier les emissions.
-        m.put("ADMIN", EnumSet.of(Permission.EMISSION_VALIDATE, Permission.EMISSION_DELETE,
+        m.put(ADMIN, EnumSet.of(Permission.EMISSION_VALIDATE, Permission.EMISSION_DELETE,
                 Permission.CLIENT_CREATE, Permission.CLIENT_MANAGE, Permission.USER_MANAGE,
                 Permission.AUDIT_READ, Permission.REPORTING_READ, Permission.CONFIG_MARCHE,
                 Permission.ACCOUNT_BALANCE_READ));
@@ -112,13 +119,13 @@ public class Rbac {
 
     /** Vrai si le role correspond a un client investisseur (PP ou PM). */
     public static boolean isClient(String role) {
-        return "CLIENT_PP".equals(role) || "CLIENT_PM".equals(role);
+        return CLIENT_PP.equals(role) || CLIENT_PM.equals(role);
     }
 
     /** Vrai si le role correspond a un acteur interne (back-office). */
     public static boolean isStaff(String role) {
         return switch (role == null ? "" : role) {
-            case "AGENT", "SUPERVISEUR", "ADMIN" -> true;
+            case AGENT, SUPERVISEUR, ADMIN -> true;
             default -> false;
         };
     }

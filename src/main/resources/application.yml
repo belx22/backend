@@ -52,9 +52,27 @@ server:
     max-swallow-size: -1
     max-http-form-post-size: 30MB
 
+# Documentation OpenAPI / Swagger UI.
+#   UI   : http://localhost:8080/swagger-ui.html
+#   JSON : http://localhost:8080/v3/api-docs
+# Securite : desactiver en production (SPRINGDOC_ENABLED=false /
+# SPRINGDOC_SWAGGER_UI_ENABLED=false) pour ne pas exposer publiquement la
+# cartographie de l'API.
+springdoc:
+  api-docs:
+    enabled: ${SPRINGDOC_ENABLED:true}
+  swagger-ui:
+    enabled: ${SPRINGDOC_SWAGGER_UI_ENABLED:true}
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+
 # Parametres applicatifs (lies a AppProperties).
 app:
   jwt-secret: ${APP_JWT_SECRET:dev_secret_a_remplacer_en_production_32_caracteres_min}
+  # Stockage des fichiers televerses (captures faciales, pieces justificatives),
+  # hors racine web. En production : monter un volume dedie et sauvegarde.
+  upload-dir: ${APP_UPLOAD_DIR:./data/uploads}
   access-token-ttl: ${APP_ACCESS_TOKEN_TTL:900}
   refresh-token-ttl: ${APP_REFRESH_TOKEN_TTL:2592000}
   frontend-origin: ${APP_FRONTEND_ORIGIN:http://localhost:4200}

@@ -1,6 +1,7 @@
 package cm.afriland.titres.web;
 
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -32,6 +33,7 @@ import cm.afriland.titres.security.AuthUser;
 import cm.afriland.titres.security.ClientIp;
 import cm.afriland.titres.security.PasswordService;
 import cm.afriland.titres.security.Permission;
+import cm.afriland.titres.security.Rbac;
 import cm.afriland.titres.security.Tokens;
 import cm.afriland.titres.support.PageResponse;
 import cm.afriland.titres.support.Pagination;
@@ -53,6 +55,18 @@ public class ClientController {
      *  defaut a partir du compte utilisateur (`raison_sociale` = nom prenom,
      *  type derive du role, statut ACTIF, date d'ouverture inconnue). */
     private static final String CLIENT_ROLES = "('CLIENT_PP','CLIENT_PM')";
+
+    /** Litteraux reutilises — evite la duplication (S1192). */
+    private static final String AND_USER_ID = " AND u.id = ?";
+    private static final String CLIENT_INTROUVABLE = "Client introuvable.";
+    private static final String QUALIFIE = "QUALIFIE";
+    private static final String NON_QUALIFIE = "NON_QUALIFIE";
+    private static final String ACTIF = "ACTIF";
+    private static final String SUSPENDU = "SUSPENDU";
+    private static final String COL_USER_ID = "user_id";
+
+    /** Le serveur tourne en UTC : on l'explicite plutot que de dependre du fuseau JVM. */
+    private static final ZoneOffset ZONE = ZoneOffset.UTC;
 
     private static final String PROFILE_SELECT = "SELECT u.id AS user_id, "
             + "COALESCE(cp.type_personne, CASE WHEN u.role = 'CLIENT_PM' THEN 'PM' ELSE 'PP' END) "
@@ -136,6 +150,22 @@ public class ClientController {
                                Long soldeEspecesInitial) {
     }
 
+    // ─────────────────────────── Petits utilitaires ─────────────────────────
+
+    /** Chaine ebarbee, ou {@code null} si absente. */
+    private static String trimOuNull(String v) {
+        return v == null ? null : v.trim();
+    }
+
+    /** Telephone de contact du titulaire : portable en priorite, sinon bureau. */
+    private static String telephoneTitulaire(ReqContact titulaire) {
+        String portable = titulaire.telephonePortable();
+        if (portable != null && !portable.isBlank()) {
+            return portable.trim();
+        }
+        return trimOuNull(titulaire.telephoneBureau());
+    }
+
     // ───────────────────────────── Handlers ─────────────────────────────────
 
     /** {@code GET /clients} — liste des comptes investisseurs (CLIENT_MANAGE). */
@@ -177,7 +207,7 @@ public class ClientController {
     /** {@code GET /clients/me} — dossier du client connecte (solde masque). */
     @GetMapping("/me")
     public ClientDossier myDossier(AuthUser user) {
-        ClientDossier dossier = loadDossiers(PROFILE_SELECT + " AND u.id = ?", user.id())
+        ClientDossier dossier = loadDossiers(PROFILE_SELECT + AND_USER_ID, user.id())
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> ApiException.notFound(
@@ -192,9 +222,9 @@ public class ClientController {
         if (staff) {
             user.require(Permission.CLIENT_MANAGE);
         }
-        ClientDossier dossier = loadDossiers(PROFILE_SELECT + " AND u.id = ?", id).stream()
+        ClientDossier dossier = loadDossiers(PROFILE_SELECT + AND_USER_ID, id).stream()
                 .findFirst()
-                .orElseThrow(() -> ApiException.notFound("Client introuvable."));
+                .orElseThrow(() -> ApiException.notFound(CLIENT_INTROUVABLE));
         return staff ? dossier : scrubBalanceForClient(dossier, user);
     }
 
@@ -230,8 +260,8 @@ public class ClientController {
         ApiException.ensure(req.sousComptes() != null && !req.sousComptes().isEmpty(),
                 "au moins un sous-compte titres requis");
 
-        String role = "PP".equals(typePersonne) ? "CLIENT_PP" : "CLIENT_PM";
-        String categorie = "QUALIFIE".equals(req.categorie()) ? "QUALIFIE" : "NON_QUALIFIE";
+        String role = "PP".equals(typePersonne) ? Rbac.CLIENT_PP : Rbac.CLIENT_PM;
+        String categorie = QUALIFIE.equals(req.categorie()) ? QUALIFIE : NON_QUALIFIE;
         String typeCompte = (req.typeCompte() != null && !req.typeCompte().trim().isEmpty())
                 ? req.typeCompte() : "INDIVIDUEL";
 
@@ -262,7 +292,6 @@ public class ClientController {
         for (ReqSousCompte s : req.sousComptes()) {
             ApiException.ensure(s.numero() != null && !s.numero().trim().isEmpty(),
                     "le numéro de chaque sous-compte titres est requis");
-            // Le libellé est facultatif (valeur par défaut appliquée à l'insertion).
         }
 
         // Numeros de compte uniques (verifies en base, anti-collision). Le compte
@@ -281,14 +310,11 @@ public class ClientController {
         String passwordHash = password.hash(motDePasseInitial);
 
         // Telephone du titulaire (premier signataire) — sert au canal SMS.
-        String telephone = first.telephonePortable() != null && !first.telephonePortable().isBlank()
-                ? first.telephonePortable().trim()
-                : (first.telephoneBureau() != null ? first.telephoneBureau().trim() : null);
+        String telephone = telephoneTitulaire(first);
 
-        String nom = "PM".equals(typePersonne)
-                ? req.raisonSociale().trim() : first.nom().trim();
-        String prenom = "PM".equals(typePersonne)
-                ? null : (first.prenom() == null ? null : first.prenom().trim());
+        boolean personneMorale = "PM".equals(typePersonne);
+        String nom = personneMorale ? req.raisonSociale().trim() : first.nom().trim();
+        String prenom = personneMorale ? null : trimOuNull(first.prenom());
 
         UUID userId = jdbc.queryForObject(
                 "INSERT INTO users (email, password_hash, role, nom, prenom, compte_titres, "
@@ -333,9 +359,9 @@ public class ClientController {
             LocalDate dateOuv;
             try {
                 dateOuv = s.dateOuverture() != null
-                        ? LocalDate.parse(s.dateOuverture()) : LocalDate.now();
+                        ? LocalDate.parse(s.dateOuverture()) : LocalDate.now(ZONE);
             } catch (RuntimeException e) {
-                dateOuv = LocalDate.now();
+                dateOuv = LocalDate.now(ZONE);
             }
             jdbc.update("INSERT INTO sous_comptes_titres (user_id, numero, libelle, type, statut, "
                             + "date_ouverture, positions_count, valeur_totale, observations, ordre) "
@@ -344,7 +370,7 @@ public class ClientController {
                     (s.libelle() != null && !s.libelle().trim().isEmpty())
                             ? s.libelle().trim() : "Compte de conservation",
                     s.type() != null ? s.type() : "CONSERVATION",
-                    s.statut() != null ? s.statut() : "ACTIF", dateOuv,
+                    s.statut() != null ? s.statut() : ACTIF, dateOuv,
                     Math.max(0, s.positionsCount() == null ? 0 : s.positionsCount()),
                     Math.max(0, s.valeurTotale() == null ? 0 : s.valeurTotale()),
                     trimToNull(s.observations()), i);
@@ -363,11 +389,9 @@ public class ClientController {
                         Long.class, csEmail);
                 if (taken != null && taken > 0) continue;     // e-mail deja utilise -> ignore
                 String csPwd = Tokens.generatePassword();
-                String csTel = cs.telephonePortable() != null && !cs.telephonePortable().isBlank()
-                        ? cs.telephonePortable().trim()
-                        : (cs.telephoneBureau() != null ? cs.telephoneBureau().trim() : null);
+                String csTel = telephoneTitulaire(cs);
                 String csNom = cs.nom().trim();
-                String csPrenom = cs.prenom() == null ? null : cs.prenom().trim();
+                String csPrenom = trimOuNull(cs.prenom());
                 jdbc.update("INSERT INTO users (email, password_hash, role, nom, prenom, telephone, "
                                 + "account_holder_id, must_change_password, initial_password_enc) "
                                 + "VALUES (?,?,?,?,?,?,?, TRUE, ?)",
@@ -385,7 +409,7 @@ public class ClientController {
         String nomComplet = prenom != null ? nom + " " + prenom : nom;
         credentials.sendInitialPassword(email, telephone, nomComplet, motDePasseInitial, true);
 
-        ClientDossier dossier = loadDossiers(PROFILE_SELECT + " AND u.id = ?", userId)
+        ClientDossier dossier = loadDossiers(PROFILE_SELECT + AND_USER_ID, userId)
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("dossier introuvable après création"));
@@ -414,21 +438,25 @@ public class ClientController {
 
         String role = jdbc.query("SELECT role FROM users WHERE id = ? AND role IN " + CLIENT_ROLES,
                 rs -> rs.next() ? rs.getString(1) : null, id);
-        ApiException.ensure(role != null, "Client introuvable.");
-        boolean pm = "CLIENT_PM".equals(role);
+        ApiException.ensure(role != null, CLIENT_INTROUVABLE);
+        boolean pm = Rbac.CLIENT_PM.equals(role);
 
         String categorie = trimToNull(req.categorie());
         if (categorie != null) {
-            ApiException.ensure("QUALIFIE".equals(categorie) || "NON_QUALIFIE".equals(categorie),
+            ApiException.ensure(QUALIFIE.equals(categorie) || NON_QUALIFIE.equals(categorie),
                     "catégorie invalide (QUALIFIE ou NON_QUALIFIE)");
         }
         String compteStatut = trimToNull(req.statut());
         if (compteStatut != null) {
-            ApiException.ensure(Set.of("ACTIF", "BLOQUE", "SUSPENDU", "CLOTURE").contains(compteStatut),
+            ApiException.ensure(Set.of(ACTIF, "BLOQUE", SUSPENDU, "CLOTURE").contains(compteStatut),
                     "statut invalide (ACTIF, BLOQUE, SUSPENDU ou CLOTURE)");
         }
         // users.statut n'accepte que ACTIF/SUSPENDU : ACTIF reste ACTIF, tout le reste suspend l'acces.
-        String usersStatut = compteStatut == null ? null : ("ACTIF".equals(compteStatut) ? "ACTIF" : "SUSPENDU");
+        // Le compte utilisateur suit le statut du dossier : seul ACTIF reste actif.
+        String usersStatut = null;
+        if (compteStatut != null) {
+            usersStatut = ACTIF.equals(compteStatut) ? ACTIF : SUSPENDU;
+        }
 
         String email = normalizeNewEmail(req.email(), id);
         String telephone = trimToNull(req.telephone());
@@ -528,9 +556,9 @@ public class ClientController {
                 ReqSousCompte s = scs.get(i);
                 LocalDate dateOuv;
                 try {
-                    dateOuv = s.dateOuverture() != null ? LocalDate.parse(s.dateOuverture()) : LocalDate.now();
+                    dateOuv = s.dateOuverture() != null ? LocalDate.parse(s.dateOuverture()) : LocalDate.now(ZONE);
                 } catch (RuntimeException e) {
-                    dateOuv = LocalDate.now();
+                    dateOuv = LocalDate.now(ZONE);
                 }
                 jdbc.update("INSERT INTO sous_comptes_titres (user_id, numero, libelle, type, statut, "
                                 + "date_ouverture, positions_count, valeur_totale, observations, ordre) "
@@ -539,7 +567,7 @@ public class ClientController {
                         (s.libelle() != null && !s.libelle().trim().isEmpty())
                                 ? s.libelle().trim() : "Compte de conservation",
                         s.type() != null ? s.type() : "CONSERVATION",
-                        s.statut() != null ? s.statut() : "ACTIF", dateOuv,
+                        s.statut() != null ? s.statut() : ACTIF, dateOuv,
                         Math.max(0, s.positionsCount() == null ? 0 : s.positionsCount()),
                         Math.max(0, s.valeurTotale() == null ? 0 : s.valeurTotale()),
                         trimToNull(s.observations()), i);
@@ -551,7 +579,8 @@ public class ClientController {
         if (a != null && a.rue() != null && !a.rue().trim().isEmpty()) {
             String ville = a.ville() != null ? a.ville().trim() : "";
             String pays = a.pays() != null ? a.pays().trim() : "Cameroun";
-            String kind = a.type() != null ? a.type() : ("CLIENT_PM".equals(role) ? "SIEGE" : "DOMICILE");
+            String kindParDefaut = Rbac.CLIENT_PM.equals(role) ? "SIEGE" : "DOMICILE";
+            String kind = a.type() != null ? a.type() : kindParDefaut;
             int updated = jdbc.update("UPDATE client_adresses SET type = ?, residence = ?, rue = ?, "
                             + "code_postal = ?, ville = ?, pays = ? WHERE user_id = ? AND ordre = 0",
                     kind, a.residence(), a.rue().trim(), a.codePostal(), ville, pays, id);
@@ -563,7 +592,7 @@ public class ClientController {
         }
 
         audit.log(user.id().toString(), "MODIFICATION_CLIENT", AuditService.SUCCES, id.toString(), ip.value());
-        return loadDossiers(PROFILE_SELECT + " AND u.id = ?", id).stream().findFirst()
+        return loadDossiers(PROFILE_SELECT + AND_USER_ID, id).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("dossier introuvable après mise à jour"));
     }
 
@@ -579,13 +608,13 @@ public class ClientController {
         user.require(Permission.CLIENT_MANAGE);
         String role = jdbc.query("SELECT role FROM users WHERE id = ? AND role IN " + CLIENT_ROLES,
                 rs -> rs.next() ? rs.getString(1) : null, id);
-        ApiException.ensure(role != null, "Client introuvable.");
+        ApiException.ensure(role != null, CLIENT_INTROUVABLE);
 
         ensureProfileRow(id);
         jdbc.update("UPDATE client_profiles SET compte_statut = 'CLOTURE' WHERE user_id = ?", id);
         jdbc.update("UPDATE users SET statut = 'SUSPENDU' WHERE id = ?", id);
         audit.log(user.id().toString(), "DESACTIVATION_CLIENT", AuditService.SUCCES, id.toString(), ip.value());
-        return loadDossiers(PROFILE_SELECT + " AND u.id = ?", id).stream().findFirst()
+        return loadDossiers(PROFILE_SELECT + AND_USER_ID, id).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("dossier introuvable après désactivation"));
     }
 
@@ -620,14 +649,15 @@ public class ClientController {
     }
 
     /**
+     * Generateur cryptographiquement fort pour les numeros de compte. */
+    private static final java.security.SecureRandom ACCOUNT_RNG = new java.security.SecureRandom();
+
+    /**
      * Genere un numero de compte ("037 10001 NNNNNNNNNNN") garanti unique en base
      * — il ne doit apparaitre ni en compte_titres ni en compte_especes — et
      * distinct des numeros deja choisis dans le meme onboarding. Remplace l'ancien
      * derive de l'horodatage, qui pouvait collisionner silencieusement.
      */
-    /** Generateur cryptographiquement fort pour les numeros de compte. */
-    private static final java.security.SecureRandom ACCOUNT_RNG = new java.security.SecureRandom();
-
     private String generateUniqueAccount(String... avoid) {
         java.util.Set<String> taboo = java.util.Set.of(avoid);
         for (int i = 0; i < 25; i++) {
@@ -654,7 +684,7 @@ public class ClientController {
     private List<ClientDossier> loadDossiers(String profileSql, Object... profileArgs) {
         // 1) Charge la page de profils.
         List<Object[]> rows = jdbc.query(profileSql, (rs, n) -> new Object[]{
-                rs.getObject("user_id", UUID.class),
+                rs.getObject(COL_USER_ID, UUID.class),
                 rs.getString("type_personne"),
                 rs.getString("raison_sociale"),
                 rs.getString("rccm"),
@@ -683,7 +713,7 @@ public class ClientController {
         jdbc.query("SELECT user_id, type, residence, rue, code_postal, ville, pays "
                 + "FROM client_adresses WHERE user_id IN (" + placeholders + ") "
                 + "ORDER BY user_id, ordre", rs -> {
-            adresses.computeIfAbsent(rs.getObject("user_id", UUID.class), k -> new ArrayList<>())
+            adresses.computeIfAbsent(rs.getObject(COL_USER_ID, UUID.class), k -> new ArrayList<>())
                     .add(new AdresseDto(rs.getString("type"), rs.getString("residence"),
                             rs.getString("rue"), rs.getString("code_postal"), rs.getString("ville"),
                             rs.getString("pays")));
@@ -694,7 +724,7 @@ public class ClientController {
                 + "telephone_domicile, telephone_bureau, email, whatsapp, piece_identite, numero_piece, "
                 + "date_validite_piece, lien_parente FROM client_contacts "
                 + "WHERE user_id IN (" + placeholders + ") ORDER BY user_id, ordre", rs -> {
-            contacts.computeIfAbsent(rs.getObject("user_id", UUID.class), k -> new ArrayList<>())
+            contacts.computeIfAbsent(rs.getObject(COL_USER_ID, UUID.class), k -> new ArrayList<>())
                     .add(new ContactDto(rs.getObject("id", UUID.class), rs.getString("type"),
                             rs.getString("nom"), rs.getString("prenom"), rs.getString("civilite"),
                             rs.getString("fonction"), rs.getString("telephone_portable"),
@@ -708,7 +738,7 @@ public class ClientController {
         jdbc.query("SELECT id, user_id, numero, libelle, type, statut, date_ouverture, "
                 + "positions_count, valeur_totale, observations FROM sous_comptes_titres "
                 + "WHERE user_id IN (" + placeholders + ") ORDER BY user_id, ordre", rs -> {
-            sousComptes.computeIfAbsent(rs.getObject("user_id", UUID.class), k -> new ArrayList<>())
+            sousComptes.computeIfAbsent(rs.getObject(COL_USER_ID, UUID.class), k -> new ArrayList<>())
                     .add(new SousCompteDto(rs.getObject("id", UUID.class), rs.getString("numero"),
                             rs.getString("libelle"), rs.getString("type"), rs.getString("statut"),
                             rs.getObject("date_ouverture", LocalDate.class),
@@ -729,7 +759,7 @@ public class ClientController {
                     typeCompte != null ? typeCompte : "INDIVIDUEL",
                     (String) r[9],
                     (LocalDate) r[10],
-                    categorie != null ? categorie : "NON_QUALIFIE",
+                    categorie != null ? categorie : NON_QUALIFIE,
                     r[12] != null ? (String) r[12] : "",
                     solde != null ? solde : 0L,
                     adresses.getOrDefault(uid, List.of()),

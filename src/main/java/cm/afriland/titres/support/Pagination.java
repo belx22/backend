@@ -11,7 +11,7 @@ import java.util.List;
 public record Pagination(long limit, long offset) {
 
     public static Pagination of(Integer page, Integer size) {
-        long s = (size == null) ? 20 : Math.max(1, Math.min(100, size));
+        long s = (size == null) ? 20 : Math.clamp(size, 1, 100);
         long p = (page == null) ? 1 : Math.max(1, page);
         return new Pagination(s, (p - 1) * s);
     }

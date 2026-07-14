@@ -18,7 +18,12 @@ class SecurityHeadersFilterTest {
     // ─── Helper ───────────────────────────────────────────────────────────────
 
     private MockHttpServletResponse runFilter() throws ServletException, IOException {
+        return runFilter("/api/v1/emissions");
+    }
+
+    private MockHttpServletResponse runFilter(String uri) throws ServletException, IOException {
         MockHttpServletRequest  req  = new MockHttpServletRequest();
+        req.setRequestURI(uri);
         MockHttpServletResponse res  = new MockHttpServletResponse();
         FilterChain             chain = mock(FilterChain.class);
         filter.doFilterInternal(req, res, chain);
@@ -58,6 +63,50 @@ class SecurityHeadersFilterTest {
     void ajoute_Permissions_Policy_geolocation_camera_microphone() throws Exception {
         assertEquals("geolocation=(), camera=(), microphone=()",
                 runFilter().getHeader("Permissions-Policy"));
+    }
+
+    // ─── CSP assouplie pour Swagger UI ────────────────────────────────────────
+
+    private static final String SWAGGER_CSP =
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            + "connect-src 'self'; frame-ancestors 'none'";
+
+    @Test
+    void CSP_stricte_sur_une_route_API() throws Exception {
+        assertEquals("default-src 'none'; frame-ancestors 'none'",
+                runFilter("/api/v1/emissions").getHeader("Content-Security-Policy"));
+    }
+
+    @Test
+    void CSP_assouplie_sur_swagger_ui() throws Exception {
+        assertEquals(SWAGGER_CSP,
+                runFilter("/swagger-ui/index.html").getHeader("Content-Security-Policy"));
+    }
+
+    @Test
+    void CSP_assouplie_sur_swagger_ui_html() throws Exception {
+        assertEquals(SWAGGER_CSP,
+                runFilter("/swagger-ui.html").getHeader("Content-Security-Policy"));
+    }
+
+    @Test
+    void CSP_assouplie_sur_api_docs() throws Exception {
+        assertEquals(SWAGGER_CSP,
+                runFilter("/v3/api-docs").getHeader("Content-Security-Policy"));
+    }
+
+    @Test
+    void CSP_assouplie_sur_api_docs_swagger_config() throws Exception {
+        assertEquals(SWAGGER_CSP,
+                runFilter("/v3/api-docs/swagger-config").getHeader("Content-Security-Policy"));
+    }
+
+    @Test
+    void les_autres_en_tetes_restent_appliques_sur_swagger() throws Exception {
+        MockHttpServletResponse res = runFilter("/swagger-ui/index.html");
+        assertEquals("nosniff", res.getHeader("X-Content-Type-Options"));
+        assertEquals("DENY", res.getHeader("X-Frame-Options"));
     }
 
     // ─── Chaîne de filtres ────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
+import java.util.UUID;
 import java.util.List;
 import java.util.Map;
 
@@ -658,7 +659,10 @@ class AdminWorkflowV10Test {
     }
 
     Map<String, Object> emissionBody() {
-        String suffix = String.valueOf(System.nanoTime()).substring(8);
+        // Suffixe tire d'un UUID (10 hex ~ 10^12 valeurs) et non de nanoTime tronque :
+        // `code` et `isin` sont UNIQUE et la base de test n'est jamais purgee entre
+        // les executions, or nanoTime tronque ne laissait que ~10^4 valeurs distinctes.
+        String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 10).toUpperCase();
         String isin = ("CM" + suffix + "0000000").substring(0, 12).toUpperCase();
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("code", "BTA-ADM-" + suffix);

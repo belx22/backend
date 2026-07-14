@@ -26,6 +26,8 @@ import cm.afriland.titres.support.Pagination;
 @RequestMapping("/api/v1/notifications")
 public class NotificationController {
 
+    private static final String COL_MESSAGE = "message";
+
     private final JdbcTemplate jdbc;
 
     public NotificationController(JdbcTemplate jdbc) {
@@ -40,7 +42,7 @@ public class NotificationController {
             rs.getObject("id", UUID.class),
             rs.getString("type"),
             rs.getString("titre"),
-            rs.getString("message"),
+            rs.getString(COL_MESSAGE),
             rs.getString("reference"),
             rs.getBoolean("lu"),
             rs.getObject("created_at", OffsetDateTime.class));
@@ -77,13 +79,13 @@ public class NotificationController {
         if (affected == 0) {
             throw ApiException.notFound("Notification introuvable.");
         }
-        return Map.of("message", "Notification marquée comme lue.");
+        return Map.of(COL_MESSAGE, "Notification marquée comme lue.");
     }
 
     /** {@code POST /notifications/read-all} — marque toutes les notifications comme lues. */
     @PostMapping("/read-all")
     public Map<String, Object> markAllRead(AuthUser user) {
         jdbc.update("UPDATE notifications SET lu = TRUE WHERE user_id = ? AND lu = FALSE", user.id());
-        return Map.of("message", "Toutes les notifications sont marquées comme lues.");
+        return Map.of(COL_MESSAGE, "Toutes les notifications sont marquées comme lues.");
     }
 }

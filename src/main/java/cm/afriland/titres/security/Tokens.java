@@ -33,9 +33,11 @@ public final class Tokens {
 
     /** Code OTP numerique de {@code longueur} chiffres (4 a 8). */
     public static String generateOtp(int longueur) {
-        int n = Math.max(4, Math.min(8, longueur));
+        int n = Math.clamp(longueur, 4, 8);
         int bound = (int) Math.pow(10, n);
-        return String.format("%0" + n + "d", RNG.nextInt(bound));
+        String tirage = Integer.toString(RNG.nextInt(bound));
+        // Rembourrage a gauche : le tirage peut comporter moins de n chiffres.
+        return "0".repeat(n - tirage.length()) + tirage;
     }
 
     /**

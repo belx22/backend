@@ -1,6 +1,7 @@
 package cm.afriland.titres.web;
 
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -56,6 +57,17 @@ public class AuthController {
 
     private static final int MAX_LOGIN_ATTEMPTS = 5;
     private static final long LOCK_DURATION_SECS = 15L * 60;
+
+    /** Litteraux reutilises — evite la duplication (S1192). */
+    private static final String SELECT_USER_BY_ID =
+            "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?";
+    private static final String SELECT_USER_BY_EMAIL =
+            "SELECT " + UserRow.COLUMNS + " FROM users WHERE email = ?";
+    private static final String ACTION_CONNEXION = "CONNEXION";
+    private static final String STATUT_ACTIF = "ACTIF";
+    private static final String CLE_MESSAGE = "message";
+    private static final String COL_USER_ID = "user_id";
+    private static final String COL_EXPIRES_AT = "expires_at";
 
     /** Quota /refresh par IP et par minute — large car protege par cookie HttpOnly. */
     private static final int REFRESH_RATE_LIMIT = 60;
@@ -162,28 +174,29 @@ public class AuthController {
         if (!rateLimiter.check("login:" + ip)) {
             throw ApiException.tooManyRequests();
         }
-        String email = req.email().trim().toLowerCase();
+        // Nom distinct du champ `email` (EmailService) pour ne pas le masquer.
+        String emailNormalise = req.email().trim().toLowerCase();
 
         UserRow user = jdbc.query(
-                        "SELECT " + UserRow.COLUMNS + " FROM users WHERE email = ?", UserRow.MAPPER, email)
+                        SELECT_USER_BY_EMAIL, UserRow.MAPPER, emailNormalise)
                 .stream().findFirst().orElse(null);
 
         if (user == null) {
             // Compte inexistant : on hache quand meme pour egaliser le temps de reponse.
             password.verify(req.password(), dummyHash);
-            audit.log(email, "CONNEXION", AuditService.ECHEC, "—", ip);
+            audit.log(emailNormalise, ACTION_CONNEXION, AuditService.ECHEC, "—", ip);
             throw invalidCredentials();
         }
 
-        OffsetDateTime now = OffsetDateTime.now();
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         boolean locked = user.lockedUntil() != null && user.lockedUntil().isAfter(now);
-        if (locked || !"ACTIF".equals(user.statut())) {
+        if (locked || !STATUT_ACTIF.equals(user.statut())) {
             password.verify(req.password(), user.passwordHash());
-            audit.log(user.id().toString(), "CONNEXION", AuditService.ECHEC, "—", ip);
+            audit.log(user.id().toString(), ACTION_CONNEXION, AuditService.ECHEC, "—", ip);
             throw invalidCredentials();
         }
 
-        if (!verifyPassword(email, req.password(), user.passwordHash())) {
+        if (!verifyPassword(emailNormalise, req.password(), user.passwordHash())) {
             int attempts = user.failedLoginAttempts() + 1;
             if (attempts >= MAX_LOGIN_ATTEMPTS) {
                 jdbc.update("UPDATE users SET failed_login_attempts = ?, locked_until = ?, "
@@ -193,7 +206,7 @@ public class AuthController {
                 jdbc.update("UPDATE users SET failed_login_attempts = ?, updated_at = now() WHERE id = ?",
                         attempts, user.id());
             }
-            audit.log(user.id().toString(), "CONNEXION", AuditService.ECHEC, "—", ip);
+            audit.log(user.id().toString(), ACTION_CONNEXION, AuditService.ECHEC, "—", ip);
             throw invalidCredentials();
         }
 
@@ -212,9 +225,7 @@ public class AuthController {
         // canal de distribution reel n'est disponible (SMTP non active). Des que la
         // messagerie est configuree et que le canal OTP e-mail est actif, un code
         // aleatoire est genere et reellement envoye par e-mail.
-        // NB : la variable locale `email` (adresse destinataire) masque le champ
-        // EmailService ; on reference donc explicitement `this.email`.
-        boolean emailDeliverable = otpCfg.emailEnabled() && this.email.isConfigured();
+        boolean emailDeliverable = otpCfg.emailEnabled() && email.isConfigured();
         boolean useDevCode = props.getMfaDevCode() != null && !emailDeliverable;
         String otp = useDevCode
                 ? props.getMfaDevCode() : Tokens.generateOtp(otpCfg.longueur());
@@ -227,7 +238,7 @@ public class AuthController {
                 UUID.class, user.id(), Tokens.sha256Hex(otp), cipher.encrypt(otp),
                 now.plusSeconds(otpCfg.ttlSecondes()));
 
-        deliverOtp(otpCfg, email, otp, useDevCode);
+        deliverOtp(otpCfg, emailNormalise, otp, useDevCode);
 
         // Indice de destination (numero masque) pour l'ecran OTP : affiche le vrai
         // numero du client s'il en possede un, masque ; absent sinon (message generique).
@@ -235,7 +246,7 @@ public class AuthController {
         body.put("mfaRequired", true);
         body.put("challengeId", challengeId);
         body.put("expiresIn", otpCfg.ttlSecondes());
-        body.put("message", "Un code de vérification a été envoyé.");
+        body.put(CLE_MESSAGE, "Un code de vérification a été envoyé.");
         String phoneHint = maskPhone(user.telephone());
         if (phoneHint != null) {
             body.put("phoneHint", phoneHint);
@@ -320,9 +331,9 @@ public class AuthController {
 
         RowMapper<MfaChallenge> mapper = (rs, n) -> new MfaChallenge(
                 rs.getObject("id", UUID.class),
-                rs.getObject("user_id", UUID.class),
+                rs.getObject(COL_USER_ID, UUID.class),
                 rs.getString("code_hash"),
-                rs.getObject("expires_at", OffsetDateTime.class),
+                rs.getObject(COL_EXPIRES_AT, OffsetDateTime.class),
                 rs.getInt("attempts"),
                 rs.getBoolean("consumed"));
 
@@ -333,7 +344,7 @@ public class AuthController {
 
         if (ch == null
                 || ch.consumed()
-                || ch.expiresAt().isBefore(OffsetDateTime.now())
+                || ch.expiresAt().isBefore(OffsetDateTime.now(ZoneOffset.UTC))
                 || ch.attempts() >= otpSettings.get().maxTentatives()) {
             throw invalidMfa();
         }
@@ -348,19 +359,19 @@ public class AuthController {
         jdbc.update("UPDATE mfa_challenges SET consumed = TRUE WHERE id = ?", ch.id());
 
         UserRow user = jdbc.queryForObject(
-                "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?", UserRow.MAPPER, ch.userId());
+                SELECT_USER_BY_ID, UserRow.MAPPER, ch.userId());
 
         // Re-controle de l'etat du compte entre le login et la verification MFA :
         // un compte suspendu ou verrouille entre-temps ne doit pas obtenir de jetons.
         boolean locked = user.lockedUntil() != null
-                && user.lockedUntil().isAfter(OffsetDateTime.now());
-        if (locked || !"ACTIF".equals(user.statut())) {
-            audit.log(user.id().toString(), "CONNEXION", AuditService.ECHEC, "—", ip);
+                && user.lockedUntil().isAfter(OffsetDateTime.now(ZoneOffset.UTC));
+        if (locked || !STATUT_ACTIF.equals(user.statut())) {
+            audit.log(user.id().toString(), ACTION_CONNEXION, AuditService.ECHEC, "—", ip);
             throw invalidCredentials();
         }
 
         AuthResponse response = issueTokens(user, resp);
-        audit.log(user.id().toString(), "CONNEXION", AuditService.SUCCES, "—", ip);
+        audit.log(user.id().toString(), ACTION_CONNEXION, AuditService.SUCCES, "—", ip);
         return response;
     }
 
@@ -381,9 +392,9 @@ public class AuthController {
         String tokenHash = Tokens.sha256Hex(rtCookie);
         RowMapper<RefreshTokenRow> mapper = (rs, n) -> new RefreshTokenRow(
                 rs.getObject("id", UUID.class),
-                rs.getObject("user_id", UUID.class),
+                rs.getObject(COL_USER_ID, UUID.class),
                 rs.getBoolean("revoked"),
-                rs.getObject("expires_at", OffsetDateTime.class),
+                rs.getObject(COL_EXPIRES_AT, OffsetDateTime.class),
                 rs.getObject("rotated_at", OffsetDateTime.class));
 
         RefreshTokenRow row = jdbc.query(
@@ -392,7 +403,7 @@ public class AuthController {
                         mapper, tokenHash)
                 .stream().findFirst().orElse(null);
 
-        OffsetDateTime now = OffsetDateTime.now();
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         if (row == null || row.expiresAt().isBefore(now)) {
             throw sessionExpired();
         }
@@ -418,8 +429,8 @@ public class AuthController {
         }
 
         UserRow user = jdbc.queryForObject(
-                "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?", UserRow.MAPPER, row.userId());
-        if (!"ACTIF".equals(user.statut())) {
+                SELECT_USER_BY_ID, UserRow.MAPPER, row.userId());
+        if (!STATUT_ACTIF.equals(user.statut())) {
             throw sessionExpired();
         }
 
@@ -440,7 +451,7 @@ public class AuthController {
         }
         clearRefreshCookie(resp);
         audit.log(user.id().toString(), "DECONNEXION", AuditService.SUCCES, "—", clientIp.value());
-        return Map.of("message", "Déconnexion effectuée.");
+        return Map.of(CLE_MESSAGE, "Déconnexion effectuée.");
     }
 
     // ───────────────────────────── /me ──────────────────────────────────────
@@ -448,7 +459,7 @@ public class AuthController {
     @GetMapping("/me")
     public UserProfile me(AuthUser user) {
         UserRow row = jdbc.queryForObject(
-                "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?", UserRow.MAPPER, user.id());
+                SELECT_USER_BY_ID, UserRow.MAPPER, user.id());
         UserProfile profile = row.toProfile();
         // Les clients ne doivent jamais consulter leur solde via la plateforme
         // (defense en profondeur — la source AIF est l'apanage du back-office).
@@ -467,7 +478,7 @@ public class AuthController {
                                               @Valid @RequestBody ChangePasswordRequest req,
                                               ClientIp clientIp) {
         UserRow row = jdbc.queryForObject(
-                "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?", UserRow.MAPPER, user.id());
+                SELECT_USER_BY_ID, UserRow.MAPPER, user.id());
 
         // Première connexion : l'utilisateur vient de s'authentifier (login + MFA)
         // avec son mot de passe provisoire ; le re-saisir serait redondant. On NE
@@ -490,7 +501,7 @@ public class AuthController {
         jdbc.update("UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = ?", user.id());
 
         audit.log(user.id().toString(), "CHANGEMENT_MDP", AuditService.SUCCES, "—", clientIp.value());
-        return Map.of("message", "Mot de passe mis à jour.");
+        return Map.of(CLE_MESSAGE, "Mot de passe mis à jour.");
     }
 
     // ──────────────────── /forgot-password & /reset-password ─────────────────
@@ -499,7 +510,7 @@ public class AuthController {
     private static final long RESET_TOKEN_TTL_SECS = 3600;
 
     /** Réponse générique commune (anti-énumération de comptes). */
-    private static final Map<String, Object> RESET_GENERIC_RESPONSE = Map.of("message",
+    private static final Map<String, Object> RESET_GENERIC_RESPONSE = Map.of(CLE_MESSAGE,
             "Si un compte est associé à cette adresse, un e-mail de réinitialisation a été envoyé.");
 
     /**
@@ -514,21 +525,22 @@ public class AuthController {
         if (!rateLimiter.check("forgot:" + ip.value())) {
             throw ApiException.tooManyRequests();
         }
-        String email = req.email().trim().toLowerCase();
+        // Nom distinct du champ `email` (EmailService) pour ne pas le masquer.
+        String emailNormalise = req.email().trim().toLowerCase();
         jdbc.query("SELECT id, nom, prenom FROM users WHERE lower(email) = ? AND statut = 'ACTIF'",
                         (rs, n) -> new UUID[]{rs.getObject("id", UUID.class)},
-                        email)
+                        emailNormalise)
                 .stream().findFirst()
                 .ifPresent(row -> {
                     UUID userId = row[0];
                     String token = Tokens.generateRefreshToken();
-                    OffsetDateTime expires = OffsetDateTime.now().plusSeconds(RESET_TOKEN_TTL_SECS);
+                    OffsetDateTime expires = OffsetDateTime.now(ZoneOffset.UTC).plusSeconds(RESET_TOKEN_TTL_SECS);
                     // Invalide les éventuels jetons actifs précédents puis crée le nouveau.
                     jdbc.update("UPDATE password_reset_tokens SET used_at = now() "
                             + "WHERE user_id = ? AND used_at IS NULL", userId);
                     jdbc.update("INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) "
                             + "VALUES (?,?,?)", userId, Tokens.sha256Hex(token), expires);
-                    sendResetEmail(email, token);
+                    sendResetEmail(emailNormalise, token);
                     audit.log(userId.toString(), "DEMANDE_REINIT_MDP", AuditService.SUCCES, "—", ip.value());
                 });
         return RESET_GENERIC_RESPONSE;
@@ -549,7 +561,7 @@ public class AuthController {
         UUID userId = jdbc.query(
                         "SELECT user_id FROM password_reset_tokens "
                                 + "WHERE token_hash = ? AND used_at IS NULL AND expires_at > now()",
-                        (rs, n) -> rs.getObject("user_id", UUID.class), tokenHash)
+                        (rs, n) -> rs.getObject(COL_USER_ID, UUID.class), tokenHash)
                 .stream().findFirst()
                 .orElseThrow(() -> ApiException.badRequest(
                         "Lien de réinitialisation invalide ou expiré. Refaites une demande."));
@@ -562,7 +574,7 @@ public class AuthController {
         jdbc.update("UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = ?", userId);
 
         audit.log(userId.toString(), "REINIT_MDP", AuditService.SUCCES, "—", ip.value());
-        return Map.of("message", "Mot de passe réinitialisé. Vous pouvez vous connecter.");
+        return Map.of(CLE_MESSAGE, "Mot de passe réinitialisé. Vous pouvez vous connecter.");
     }
 
     /** Envoie l'e-mail contenant le lien de réinitialisation (page frontend). */
@@ -591,9 +603,9 @@ public class AuthController {
             throw ApiException.tooManyRequests();
         }
         UserRow row = jdbc.queryForObject(
-                "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?", UserRow.MAPPER, user.id());
+                SELECT_USER_BY_ID, UserRow.MAPPER, user.id());
         OtpSettingsService.OtpSettings otpCfg = otpSettings.get();
-        OffsetDateTime now = OffsetDateTime.now();
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         // Un seul défi actif à la fois pour cet utilisateur.
         jdbc.update("UPDATE mfa_challenges SET consumed = TRUE "
                 + "WHERE user_id = ? AND consumed = FALSE", user.id());
@@ -627,8 +639,8 @@ public class AuthController {
             throw ApiException.tooManyRequests();
         }
         RowMapper<MfaChallenge> mapper = (rs, n) -> new MfaChallenge(
-                rs.getObject("id", UUID.class), rs.getObject("user_id", UUID.class),
-                rs.getString("code_hash"), rs.getObject("expires_at", OffsetDateTime.class),
+                rs.getObject("id", UUID.class), rs.getObject(COL_USER_ID, UUID.class),
+                rs.getString("code_hash"), rs.getObject(COL_EXPIRES_AT, OffsetDateTime.class),
                 rs.getInt("attempts"), rs.getBoolean("consumed"));
         MfaChallenge ch = jdbc.query(
                         "SELECT id, user_id, code_hash, expires_at, attempts, consumed "
@@ -636,7 +648,7 @@ public class AuthController {
                 .stream().findFirst().orElse(null);
 
         if (ch == null || !ch.userId().equals(user.id()) || ch.consumed()
-                || ch.expiresAt().isBefore(OffsetDateTime.now())
+                || ch.expiresAt().isBefore(OffsetDateTime.now(ZoneOffset.UTC))
                 || ch.attempts() >= otpSettings.get().maxTentatives()) {
             throw invalidMfa();
         }
@@ -688,7 +700,7 @@ public class AuthController {
         String refreshToken = Tokens.generateRefreshToken();
         jdbc.update("INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
                 user.id(), Tokens.sha256Hex(refreshToken),
-                OffsetDateTime.now().plusSeconds(props.getRefreshTokenTtl()));
+                OffsetDateTime.now(ZoneOffset.UTC).plusSeconds(props.getRefreshTokenTtl()));
         setRefreshCookie(resp, refreshToken);
         UserProfile profile = user.toProfile();
         // Masque le solde dans la reponse d'authentification destinee aux clients.

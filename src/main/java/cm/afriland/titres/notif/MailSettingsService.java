@@ -27,6 +27,10 @@ public class MailSettingsService {
 
     private static final Logger log = LoggerFactory.getLogger(MailSettingsService.class);
 
+    /** Delai SMTP (connexion, lecture, ecriture) en millisecondes. */
+    private static final String SMTP_TIMEOUT_MS = "10000";
+    private static final String DIV_CLOSE = "</div>";
+
     private final JdbcTemplate jdbc;
     private final SecretCipher cipher;
     private final cm.afriland.titres.config.AppProperties props;
@@ -178,13 +182,14 @@ public class MailSettingsService {
         sender.setPort(s.port());
         if (s.username() != null) sender.setUsername(s.username());
         if (s.password() != null) sender.setPassword(s.password());
-        Properties props = sender.getJavaMailProperties();
-        props.put("mail.transport.protocol", "smtp");
-        props.put("mail.smtp.auth", String.valueOf(s.auth()));
-        props.put("mail.smtp.starttls.enable", String.valueOf(s.starttls()));
-        props.put("mail.smtp.timeout", "10000");
-        props.put("mail.smtp.connectiontimeout", "10000");
-        props.put("mail.smtp.writetimeout", "10000");
+        // Nom distinct du champ `props` (AppProperties) pour ne pas le masquer.
+        Properties mailProps = sender.getJavaMailProperties();
+        mailProps.put("mail.transport.protocol", "smtp");
+        mailProps.put("mail.smtp.auth", String.valueOf(s.auth()));
+        mailProps.put("mail.smtp.starttls.enable", String.valueOf(s.starttls()));
+        mailProps.put("mail.smtp.timeout", SMTP_TIMEOUT_MS);
+        mailProps.put("mail.smtp.connectiontimeout", SMTP_TIMEOUT_MS);
+        mailProps.put("mail.smtp.writetimeout", SMTP_TIMEOUT_MS);
         return sender;
     }
 
@@ -224,16 +229,16 @@ public class MailSettingsService {
         String signature = get().signature();
         String footer = (signature == null || signature.isBlank()) ? "" :
                 "<div style=\"padding:16px 24px;border-top:1px solid #eee;color:#777;"
-                        + "font-size:12px;line-height:1.5;\">" + signature + "</div>";
+                        + "font-size:12px;line-height:1.5;\">" + signature + DIV_CLOSE;
         return "<div style=\"font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;"
                 + "border:1px solid #eee;border-radius:8px;overflow:hidden;\">"
                 + "<div style=\"text-align:center;padding:20px;border-bottom:3px solid #c8102e;\">"
                 + "<img src=\"" + logo + "\" alt=\"Afriland First Bank\" style=\"max-height:56px;\"/>"
-                + "</div>"
+                + DIV_CLOSE
                 + "<div style=\"padding:24px;color:#333;font-size:14px;line-height:1.6;\">"
-                + contentHtml + "</div>"
+                + contentHtml + DIV_CLOSE
                 + footer
-                + "</div>";
+                + DIV_CLOSE;
     }
 
     private static String trimToNull(String v) {

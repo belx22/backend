@@ -27,14 +27,26 @@ public class AppProperties {
      * En LDAP/LDAP_THEN_LOCAL, l'annuaire doit etre active et configure
      * (espace d'administration LDAP) ; sinon on retombe sur LOCAL par securite.
      */
-    private String authMode = "LOCAL";
+    public static final String MODE_LOCAL = "LOCAL";
+    private String authMode = MODE_LOCAL;
     /** Insere le jeu de donnees de demonstration si la base est vide. */
     private boolean seedOnStart = true;
     /** Code OTP fixe pour la demo. Vide en production (OTP aleatoire). */
     private String mfaDevCode;
+    /** Repertoire de stockage des fichiers televerses (captures faciales, pieces
+     *  justificatives). Hors racine web : jamais servi en statique, telechargement
+     *  via endpoint authentifie. */
+    private String uploadDir = "./data/uploads";
 
-    /** URL de base du serveur Amplitude / AIF (proxy interne uniquement). */
-    private String aifBaseUrl = "https://172.21.88.95:8095/amplitude/accounts/v1";
+    /**
+     * URL de base du serveur Amplitude / AIF (proxy interne uniquement).
+     *
+     * <p>Aucune valeur par defaut dans le code : l'adresse du serveur interne est
+     * une donnee de deploiement, fournie par {@code APP_AIF_BASE_URL} (cf.
+     * {@code application.yml}). Laissee vide, la consultation de solde se degrade
+     * gracieusement au lieu de pointer une topologie reseau codee en dur.</p>
+     */
+    private String aifBaseUrl;
     /** Login HTTP basic ou X-SBS-login transmis a AIF (jamais expose au front). */
     private String aifLogin;
     /** Mot de passe AIF (jamais expose au front). */
@@ -103,10 +115,10 @@ public class AppProperties {
     }
 
     public String getAuthMode() {
-        String m = authMode == null ? "LOCAL" : authMode.trim().toUpperCase();
+        String m = authMode == null ? MODE_LOCAL : authMode.trim().toUpperCase();
         return switch (m) {
-            case "LDAP", "LDAP_THEN_LOCAL", "LOCAL" -> m;
-            default -> "LOCAL";
+            case "LDAP", "LDAP_THEN_LOCAL", MODE_LOCAL -> m;
+            default -> MODE_LOCAL;
         };
     }
     public void setAuthMode(String authMode) { this.authMode = authMode; }
@@ -119,6 +131,9 @@ public class AppProperties {
         return mfaDevCode;
     }
     public void setMfaDevCode(String mfaDevCode) { this.mfaDevCode = mfaDevCode; }
+
+    public String getUploadDir() { return uploadDir; }
+    public void setUploadDir(String uploadDir) { this.uploadDir = uploadDir; }
 
     public String getAifBaseUrl() { return aifBaseUrl; }
     public void setAifBaseUrl(String aifBaseUrl) { this.aifBaseUrl = aifBaseUrl; }
