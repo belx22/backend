@@ -45,8 +45,10 @@ services:
       # l'espace d'administration > LDAP / Active Directory.
       APP_AUTH_MODE: "${APP_AUTH_MODE:-LOCAL}"
       APP_SEED_ON_START: "${APP_SEED_ON_START:-true}"
-      # Code OTP fixe pour la demo. METTRE "" EN PRODUCTION (OTP aleatoire reel).
-      APP_MFA_DEV_CODE: "${APP_MFA_DEV_CODE:-123456}"
+      # Code OTP fixe de demonstration. VIDE PAR DEFAUT : l'OTP est un code
+      # aleatoire reel. A ne renseigner (APP_MFA_DEV_CODE=123456 dans .env) que
+      # pour une demo hors ligne, jamais en production.
+      APP_MFA_DEV_CODE: "${APP_MFA_DEV_CODE:-}"
       # Serveur Amplitude / AIF (consultation de solde — proxy backend uniquement).
       # En production : renseigner APP_AIF_LOGIN / APP_AIF_PASSWORD via un secret
       # manager et passer APP_AIF_TRUST_ALL_CERTS=false avec un trust-store dedie.

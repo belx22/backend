@@ -77,8 +77,15 @@ app:
   refresh-token-ttl: ${APP_REFRESH_TOKEN_TTL:2592000}
   frontend-origin: ${APP_FRONTEND_ORIGIN:http://localhost:4200}
   seed-on-start: ${APP_SEED_ON_START:true}
-  # Code OTP fixe pour la demo. Laisser vide en production.
-  mfa-dev-code: ${APP_MFA_DEV_CODE:123456}
+  # Code OTP fixe de demonstration. VIDE PAR DEFAUT : l'OTP est toujours un code
+  # aleatoire reel. Le code fixe n'a de sens que pour une demo hors ligne, et il
+  # doit alors etre demande explicitement (APP_MFA_DEV_CODE=123456).
+  #
+  # NB : meme renseigne, il n'est utilise QUE si aucun canal d'envoi n'est
+  # disponible (cf. AuthController : useDevCode = mfaDevCode != null &&
+  # !emailDeliverable). Sans SMTP, le code reste consultable par le back-office
+  # (Administration > Codes OTP), qui le relaie au client.
+  mfa-dev-code: ${APP_MFA_DEV_CODE:}
   # Serveur Amplitude / AIF — proxy backend uniquement (jamais expose au front).
   aif-base-url: ${APP_AIF_BASE_URL:https://172.21.88.95:8095/amplitude/accounts/v1}
   aif-login: ${APP_AIF_LOGIN:}
