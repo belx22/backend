@@ -16,6 +16,8 @@ import cm.afriland.titres.error.ApiException;
 import cm.afriland.titres.security.AuthUser;
 import cm.afriland.titres.security.ClientIp;
 import cm.afriland.titres.security.Permission;
+import cm.afriland.titres.support.PageResponse;
+import cm.afriland.titres.support.Pagination;
 import cm.afriland.titres.support.ClientsFbRepository;
 
 /**
@@ -75,21 +77,43 @@ public class ClientsFbController {
                 "total", req.lignes().size());
     }
 
-    /** Consultation du referentiel (recherche par nom ou numero de compte). */
+    /**
+     * Consultation paginee du referentiel (recherche par nom ou numero de compte).
+     *
+     * <p>Le referentiel compte plusieurs milliers de lignes : les renvoyer d'un
+     * bloc etait intenable. Une troncature muette (« les 200 premieres ») serait
+     * pire encore — l'agent croirait avoir tout vu. On pagine donc, et on rend le
+     * <b>total</b> pour qu'il sache ce qu'il reste.</p>
+     */
     @GetMapping
-    public List<Map<String, Object>> list(AuthUser user,
-                                          @RequestParam(required = false) String q) {
+    public PageResponse<Map<String, Object>> list(AuthUser user,
+                                                  @RequestParam(required = false) String q,
+                                                  @RequestParam(required = false) Integer page,
+                                                  @RequestParam(required = false) Integer size) {
         user.require(Permission.CLIENT_MANAGE);
         String recherche = q == null || q.isBlank() ? null : "%" + q.trim().toLowerCase() + "%";
-        String sql = "SELECT id, nom_prenom, numero_compte, compte_especes, agence, matricule, "
-                + "categorie, compte_depot, assujetti_taxes, localisation, dirigeant, "
-                + "telephone1, telephone2, email FROM clients_fb "
-                + (recherche != null
-                        ? "WHERE lower(nom_prenom) LIKE ? OR numero_compte LIKE ? OR compte_especes LIKE ? "
-                        : "")
-                + "ORDER BY nom_prenom LIMIT 200";
-        return recherche != null
-                ? jdbc.queryForList(sql, recherche, recherche, recherche)
-                : jdbc.queryForList(sql);
+        String filtre = recherche != null
+                ? "WHERE lower(nom_prenom) LIKE ? OR numero_compte LIKE ? OR compte_especes LIKE ? "
+                : "";
+        Object[] critere = recherche != null
+                ? new Object[]{recherche, recherche, recherche}
+                : new Object[0];
+
+        Long total = jdbc.queryForObject(
+                "SELECT count(*) FROM clients_fb " + filtre, Long.class, critere);
+
+        Pagination pg = Pagination.of(page, size);
+        Object[] args = new Object[critere.length + 2];
+        System.arraycopy(critere, 0, args, 0, critere.length);
+        args[critere.length] = pg.limit();
+        args[critere.length + 1] = pg.offset();
+
+        List<Map<String, Object>> data = jdbc.queryForList(
+                "SELECT id, nom_prenom, numero_compte, compte_especes, agence, matricule, "
+                        + "categorie, compte_depot, assujetti_taxes, localisation, dirigeant, "
+                        + "telephone1, telephone2, email FROM clients_fb " + filtre
+                        + "ORDER BY nom_prenom, numero_compte LIMIT ? OFFSET ?", args);
+
+        return pg.build(data, total == null ? 0 : total);
     }
 }

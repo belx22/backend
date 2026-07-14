@@ -155,6 +155,18 @@ class ClientsFbV29Test {
         return m;
     }
 
+    /** Lignes d'une page du referentiel (la reponse est paginee : {data, page, size, total}). */
+    List<Map<String, Object>> pageDe(String queryString) {
+        ResponseEntity<Map> r = GET("/api/v1/admin/clients-fb" + queryString, agent);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        return (List<Map<String, Object>>) r.getBody().get("data");
+    }
+
+    long totalDe(String queryString) {
+        ResponseEntity<Map> r = GET("/api/v1/admin/clients-fb" + queryString, agent);
+        return ((Number) r.getBody().get("total")).longValue();
+    }
+
     ResponseEntity<Map> inscrire(String compteEspeces) {
         return POST("/api/v1/registration/register", Map.of(
                 "email", "fb+" + UUID.randomUUID() + "@example.cm", "password", "MotDePasse1",
@@ -176,10 +188,9 @@ class ClientsFbV29Test {
                 Map.of("lignes", List.of(ligne())), agent);
         assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
 
-        ResponseEntity<List> trouve =
-                GET_LIST("/api/v1/admin/clients-fb?q=" + numeroFichier, agent);
-        assertThat(trouve.getBody()).hasSize(1);
-        Map<String, Object> row = (Map<String, Object>) trouve.getBody().get(0);
+        List<Map<String, Object>> trouve = pageDe("?q=" + numeroFichier);
+        assertThat(trouve).hasSize(1);
+        Map<String, Object> row = trouve.get(0);
         // Le compte especes est calcule en base : code banque + numero du fichier.
         assertThat(row.get("compte_especes")).isEqualTo(rib);
         assertThat(row.get("assujetti_taxes")).isEqualTo(true);
@@ -269,5 +280,45 @@ class ClientsFbV29Test {
         assertThat(me.getBody().get("compteTitres"))
                 .as("le compte de depot ne doit JAMAIS sortir cote client")
                 .isNull();
+    }
+
+    // ─── Pagination du referentiel ────────────────────────────────────────────
+
+    /**
+     * Le referentiel compte des milliers de lignes. Une troncature muette (« les
+     * 200 premieres ») ferait croire a l'agent qu'il a tout vu : on pagine, et on
+     * rend le TOTAL.
+     */
+    @Test
+    void la_liste_est_paginee_et_annonce_le_total() {
+        // Trois lignes partageant un meme prefixe de recherche.
+        String tag = "PAGIN" + Math.abs(UUID.randomUUID().hashCode() % 100000);
+        for (int i = 0; i < 3; i++) {
+            Map<String, Object> l = new LinkedHashMap<>(ligne(numeroFichier(), depot("d" + i)));
+            l.put("nomPrenom", tag + " " + i);
+            POST("/api/v1/admin/clients-fb/import", Map.of("lignes", List.of(l)), agent);
+        }
+
+        // Une page de 2 : on obtient 2 lignes, mais le total en annonce bien 3.
+        assertThat(pageDe("?q=" + tag + "&page=1&size=2")).hasSize(2);
+        assertThat(totalDe("?q=" + tag + "&page=1&size=2")).isEqualTo(3);
+
+        // La page suivante livre le reste, sans recouvrement.
+        List<Map<String, Object>> p2 = pageDe("?q=" + tag + "&page=2&size=2");
+        assertThat(p2).hasSize(1);
+        assertThat(String.valueOf(p2.get(0).get("nom_prenom"))).startsWith(tag);
+    }
+
+    @Test
+    void une_page_au_dela_du_total_est_vide_sans_erreur() {
+        assertThat(pageDe("?page=9999&size=25")).isEmpty();
+    }
+
+    /** La taille de page est bornee : on ne peut pas reclamer tout le referentiel d'un coup. */
+    @Test
+    void la_taille_de_page_est_plafonnee() {
+        ResponseEntity<Map> r = GET("/api/v1/admin/clients-fb?page=1&size=100000", agent);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(((Number) r.getBody().get("size")).longValue()).isLessThanOrEqualTo(100);
     }
 }
