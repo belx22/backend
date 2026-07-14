@@ -1,6 +1,7 @@
 package cm.afriland.titres.web;
 
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -23,6 +24,7 @@ import cm.afriland.titres.support.FileStorageService;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 /**
  * Back-office — verification des dossiers d'auto-inscription, en particulier la
@@ -32,6 +34,8 @@ import jakarta.validation.constraints.Pattern;
 @RestController
 @RequestMapping("/api/v1/admin/registrations")
 public class AdminRegistrationController {
+
+    private static final String EN_ATTENTE_VERIFICATION = "EN_ATTENTE_VERIFICATION";
 
     private final JdbcTemplate jdbc;
     private final FileStorageService storage;
@@ -56,9 +60,10 @@ public class AdminRegistrationController {
         user.require(Permission.CLIENT_MANAGE);
         String filtre = normaliserStatut(status);
         String sql = "SELECT d.id AS dossier_id, d.type_personne, d.statut AS dossier_statut, "
-                + "d.created_at, t.nom, t.prenom, "
+                + "d.compte_especes, d.submitted_at, d.created_at, u.email, t.nom, t.prenom, "
                 + "f.id AS face_id, f.liveness_score, f.verification_status, f.created_at AS face_at "
                 + "FROM registration_dossiers d "
+                + "JOIN users u ON u.id = d.user_id "
                 + "JOIN dossier_titulaires t ON t.dossier_id = d.id AND t.role_titulaire = 'PRINCIPAL' "
                 + "JOIN face_captures f ON f.dossier_id = d.id "
                 + (filtre != null ? "WHERE f.verification_status = ? " : "")
@@ -129,6 +134,182 @@ public class AdminRegistrationController {
         String action = "VALIDE".equals(req.status()) ? "VERIF_FACIALE_OK" : "VERIF_FACIALE_KO";
         audit.log(user.id().toString(), action, AuditService.SUCCES, id.toString(), clientIp.value());
         return Map.of("dossierId", id, "verificationStatus", req.status());
+    }
+
+    // ═══════════════ Validation du dossier → creation du client ═══════════════
+
+    record DecisionRequest(String motif) {
+    }
+
+    /** Le compte-titres est saisi par l'agent — facultatif : il peut le poser plus tard. */
+    record ApproveRequest(
+            @Size(max = 34, message = "compte-titres trop long") String compteTitres) {
+    }
+
+    /** Dossier complet : identite, compte especes demande, pieces deposees, etat du visage. */
+    @GetMapping("/{id}/dossier")
+    public Map<String, Object> dossier(AuthUser user, @PathVariable UUID id) {
+        user.require(Permission.CLIENT_MANAGE);
+        Map<String, Object> d = chargerDossier(id);
+
+        List<Map<String, Object>> pieces = jdbc.queryForList(
+                "SELECT id, cote, document_type, ocr_texte, nettete, largeur, hauteur, chemin "
+                        + "FROM justificatifs WHERE dossier_id = ? AND type = 'PIECE_IDENTITE' "
+                        + "ORDER BY cote", id);
+        for (Map<String, Object> p : pieces) {
+            String chemin = (String) p.remove("chemin");
+            p.put("imageBase64", "data:image/jpeg;base64,"
+                    + Base64.getEncoder().encodeToString(storage.read(chemin)));
+        }
+
+        List<Map<String, Object>> visage = jdbc.queryForList(
+                "SELECT verification_status, liveness_score FROM face_captures "
+                        + "WHERE dossier_id = ? ORDER BY created_at DESC LIMIT 1", id);
+
+        return Map.of(
+                "dossierId", id,
+                "statut", d.get("statut"),
+                "typePersonne", d.get("type_personne"),
+                "compteEspeces", d.get("compte_especes"),
+                "email", d.get("email"),
+                "nom", String.valueOf(d.get("nom")),
+                "prenom", d.get("prenom") == null ? "" : d.get("prenom"),
+                "telephone", d.get("telephone") == null ? "" : d.get("telephone"),
+                "pieces", pieces,
+                "visage", visage.isEmpty() ? Map.of() : visage.get(0));
+    }
+
+    /**
+     * Valide le dossier et ouvre le compte du client.
+     *
+     * <p>Le <b>compte-titres est saisi par l'agent</b> : le client, lui, n'a
+     * renseigne que son compte especes a l'inscription. L'agent peut le laisser
+     * vide et le renseigner plus tard (le client apparait alors en rouge dans les
+     * listes) — cela n'empeche pas le client de soumettre des ordres.</p>
+     *
+     * <p>En revanche la <b>capture faciale doit avoir ete verifiee</b> : c'est le
+     * controle d'identite, et il conditionne la validation du dossier.</p>
+     */
+    @PostMapping("/{id}/approve")
+    public Map<String, Object> approve(AuthUser user, @PathVariable UUID id,
+                                       @Valid @RequestBody(required = false) ApproveRequest req,
+                                       ClientIp clientIp) {
+        user.require(Permission.CLIENT_MANAGE);
+        Map<String, Object> d = chargerDossier(id);
+        exigerEnAttente(d);
+
+        String visage = statutVisage(id);
+        if (!"VALIDE".equals(visage)) {
+            throw ApiException.badRequest("Verifiez d'abord la capture faciale du client "
+                    + "(statut actuel : " + visage + ").");
+        }
+
+        UUID userId = (UUID) d.get("user_id");
+        String compteEspeces = (String) d.get("compte_especes");
+        String compteTitres = req == null ? null : trimOuNull(req.compteTitres());
+        String typePersonne = (String) d.get("type_personne");
+        boolean pm = "PM".equals(typePersonne);
+
+        if (compteTitres != null && estDejaAttribue(compteTitres, userId)) {
+            throw ApiException.conflict("Ce compte-titres est deja attribue a un autre client.");
+        }
+
+        // COALESCE : un compte-titres omis ne doit pas effacer celui deja saisi.
+        jdbc.update("UPDATE users SET compte_titres = COALESCE(?, compte_titres), "
+                        + "compte_especes = COALESCE(compte_especes, ?), solde = COALESCE(solde, 0), "
+                        + "categorie = COALESCE(categorie, 'NON_QUALIFIE'), "
+                        + "type_compte = COALESCE(type_compte, ?), role = ? WHERE id = ?",
+                compteTitres, compteEspeces, d.get("type_compte"),
+                pm ? "CLIENT_PM" : "CLIENT_PP", userId);
+
+        // Profil client — deja present si le dossier avait ete valide puis rejoue.
+        String raisonSociale = (String) d.get("nom");
+        if (!pm && d.get("prenom") != null) {
+            raisonSociale = raisonSociale + " " + d.get("prenom");
+        }
+        jdbc.update("INSERT INTO client_profiles (user_id, type_personne, raison_sociale, "
+                        + "compte_statut, created_by) VALUES (?,?,?, 'ACTIF', ?) "
+                        + "ON CONFLICT (user_id) DO NOTHING",
+                userId, typePersonne, raisonSociale, user.id());
+
+        jdbc.update("UPDATE registration_dossiers SET statut = 'VALIDE', validated_by = ?, "
+                + "validated_at = now(), updated_at = now() WHERE id = ?", user.id(), id);
+
+        audit.log(user.id().toString(), "DOSSIER_VALIDE", AuditService.SUCCES,
+                id.toString(), clientIp.value());
+
+        Map<String, Object> reponse = new LinkedHashMap<>();
+        reponse.put("dossierId", id);
+        reponse.put("statut", "VALIDE");
+        reponse.put("userId", userId);
+        reponse.put("compteTitres", compteTitres);   // null = a renseigner (client en rouge)
+        reponse.put("compteEspeces", compteEspeces);
+        return reponse;
+    }
+
+    private boolean estDejaAttribue(String compte, UUID sauf) {
+        Long n = jdbc.queryForObject(
+                "SELECT count(*) FROM users WHERE (compte_titres = ? OR compte_especes = ?) "
+                        + "AND id <> ?", Long.class, compte, compte, sauf);
+        return n != null && n > 0;
+    }
+
+    private static String trimOuNull(String s) {
+        return s == null || s.isBlank() ? null : s.trim();
+    }
+
+    /** Rejette le dossier avec un motif ; le prospect garde son compte mais pas de compte-titres. */
+    @PostMapping("/{id}/reject")
+    public Map<String, Object> reject(AuthUser user, @PathVariable UUID id,
+                                      @RequestBody DecisionRequest req, ClientIp clientIp) {
+        user.require(Permission.CLIENT_MANAGE);
+        Map<String, Object> d = chargerDossier(id);
+        exigerEnAttente(d);
+
+        if (req == null || req.motif() == null || req.motif().isBlank()) {
+            throw ApiException.badRequest("Le motif de rejet est obligatoire.");
+        }
+        jdbc.update("UPDATE registration_dossiers SET statut = 'REJETE', motif_rejet = ?, "
+                        + "validated_by = ?, validated_at = now(), updated_at = now() WHERE id = ?",
+                req.motif().trim(), user.id(), id);
+
+        audit.log(user.id().toString(), "DOSSIER_REJETE", AuditService.SUCCES,
+                id.toString(), clientIp.value());
+        return Map.of("dossierId", id, "statut", "REJETE", "motif", req.motif().trim());
+    }
+
+    private Map<String, Object> chargerDossier(UUID id) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT d.id, d.user_id, d.type_personne, d.compte_especes, d.type_compte, d.statut, "
+                        + "u.email, u.telephone, t.nom, t.prenom "
+                        + "FROM registration_dossiers d "
+                        + "JOIN users u ON u.id = d.user_id "
+                        + "JOIN dossier_titulaires t ON t.dossier_id = d.id "
+                        + "  AND t.role_titulaire = 'PRINCIPAL' "
+                        + "WHERE d.id = ?", id);
+        if (rows.isEmpty()) {
+            throw ApiException.notFound("Dossier introuvable.");
+        }
+        return rows.get(0);
+    }
+
+    /** Seul un dossier soumis se valide : ni un brouillon, ni un dossier deja tranche. */
+    private static void exigerEnAttente(Map<String, Object> dossier) {
+        String statut = String.valueOf(dossier.get("statut"));
+        if (!EN_ATTENTE_VERIFICATION.equals(statut) && !"EN_VERIFICATION".equals(statut)) {
+            throw ApiException.badRequest(
+                    "Dossier non soumis a la verification (statut : " + statut + ").");
+        }
+    }
+
+    private String statutVisage(UUID dossierId) {
+        List<Map<String, Object>> f = jdbc.queryForList(
+                "SELECT verification_status FROM face_captures WHERE dossier_id = ? "
+                        + "ORDER BY created_at DESC LIMIT 1", dossierId);
+        if (f.isEmpty()) {
+            throw ApiException.badRequest("Aucune capture faciale pour ce dossier.");
+        }
+        return String.valueOf(f.get(0).get("verification_status"));
     }
 
     private static String normaliserStatut(String status) {

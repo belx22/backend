@@ -51,6 +51,7 @@ public class RegistrationController {
     private static final String SELECT_USER_BY_ID =
             "SELECT " + UserRow.COLUMNS + " FROM users WHERE id = ?";
     private static final String STATUT_BROUILLON = "BROUILLON";
+    private static final String STATUT_EN_ATTENTE = "EN_ATTENTE_VERIFICATION";
     /** Taille max d'une image de capture faciale (base64 decode), 6 Mo. */
     private static final int MAX_FACE_BYTES = 6 * 1024 * 1024;
     /** Score de vivacite minimal accepte cote serveur. */
@@ -128,11 +129,17 @@ public class RegistrationController {
         String typePersonne = req.typePersonne() == null ? "PP" : req.typePersonne();
         String hash = password.hash(req.password());
 
+        // Le compte ESPECES est le seul que le client renseigne : il est porte des
+        // maintenant sur son profil. Le compte-TITRES reste NULL — c'est un agent du
+        // back-office qui l'attribue ; jusque-la le client apparait en rouge cote BO,
+        // sans pour autant etre empeche de soumettre un ordre.
         UUID userId = jdbc.queryForObject(
                 "INSERT INTO users (email, password_hash, role, nom, prenom, telephone, "
-                        + "must_change_password) VALUES (?,?,?,?,?,?, FALSE) RETURNING id",
+                        + "compte_especes, solde, categorie, must_change_password) "
+                        + "VALUES (?,?,?,?,?,?,?, 0, 'NON_QUALIFIE', FALSE) RETURNING id",
                 UUID.class, email, hash, ROLE_CLIENT_PP,
-                req.nom().trim(), trimOrNull(req.prenom()), trimOrNull(req.telephone()));
+                req.nom().trim(), trimOrNull(req.prenom()), trimOrNull(req.telephone()),
+                req.compteEspeces().trim());
 
         UUID dossierId = jdbc.queryForObject(
                 "INSERT INTO registration_dossiers (user_id, type_personne, compte_especes, statut) "
@@ -271,6 +278,56 @@ public class RegistrationController {
         reponse.put("cote", req.cote());
         reponse.put("verificationStatus", "EN_ATTENTE");
         return reponse;
+    }
+
+    // ────────────────────── Etape finale — soumission ───────────────────────
+
+    /**
+     * Soumet le dossier a la verification du back-office
+     * ({@code BROUILLON} → {@code EN_ATTENTE_VERIFICATION}).
+     *
+     * <p>C'est le maillon qui relie le parcours d'inscription au back-office :
+     * sans lui le dossier resterait indefiniment en brouillon, jamais valide,
+     * et le prospect n'obtiendrait jamais de compte-titres. La capture faciale
+     * et au moins une piece d'identite sont exigees — ce sont precisement les
+     * deux elements que l'agent doit controler.</p>
+     *
+     * <p>Idempotent : re-soumettre un dossier deja soumis renvoie son etat sans
+     * erreur (le client peut avoir perdu la reponse reseau).</p>
+     */
+    @PostMapping("/dossiers/{id}/submit")
+    public Map<String, Object> submit(AuthUser user, @PathVariable UUID id, ClientIp clientIp) {
+        Map<String, Object> dossier = loadOwnedDossier(id, user.id());
+        String statut = String.valueOf(dossier.get("statut"));
+
+        if (STATUT_EN_ATTENTE.equals(statut)) {
+            return Map.of("dossierId", id, "statut", statut, "dejaSoumis", true);
+        }
+        if (!STATUT_BROUILLON.equals(statut)) {
+            throw ApiException.badRequest(
+                    "Ce dossier n'est plus modifiable (statut : " + statut + ").");
+        }
+        if (compte(id, "SELECT count(*) FROM face_captures WHERE dossier_id = ?") == 0) {
+            throw ApiException.badRequest(
+                    "Capture faciale manquante : reprenez la photo avant de soumettre.");
+        }
+        if (compte(id, "SELECT count(*) FROM justificatifs WHERE dossier_id = ? "
+                + "AND type = 'PIECE_IDENTITE'") == 0) {
+            throw ApiException.badRequest(
+                    "Piece d'identite manquante : deposez-la avant de soumettre.");
+        }
+
+        jdbc.update("UPDATE registration_dossiers SET statut = ?, submitted_at = now(), "
+                + "updated_at = now() WHERE id = ?", STATUT_EN_ATTENTE, id);
+        audit.log(user.id().toString(), "DOSSIER_SOUMIS", AuditService.SUCCES, id.toString(),
+                clientIp.value());
+
+        return Map.of("dossierId", id, "statut", STATUT_EN_ATTENTE, "dejaSoumis", false);
+    }
+
+    private long compte(UUID dossierId, String sql) {
+        Long n = jdbc.queryForObject(sql, Long.class, dossierId);
+        return n == null ? 0 : n;
     }
 
     // ───────────────────────── Convention (public) ──────────────────────────

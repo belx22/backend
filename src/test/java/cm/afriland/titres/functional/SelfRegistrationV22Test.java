@@ -219,6 +219,200 @@ class SelfRegistrationV22Test {
         assertThat(r.getBody().get("verificationStatus")).isEqualTo("EN_ATTENTE");
     }
 
+    // ═══════════ Soumission → validation back-office → compte-titres ══════════
+
+    /**
+     * Le maillon qui manquait : sans soumission, le dossier restait indefiniment
+     * en BROUILLON — jamais examine, donc jamais valide, et le client n'obtenait
+     * jamais de compte-titres.
+     */
+    @Test
+    void submit_fait_passer_le_dossier_en_attente_de_verification() {
+        String token = nouveauProspect("submit");
+        String id = dernierDossier;
+        deposerVisageEtPiece(id, token);
+
+        ResponseEntity<Map> r = POST("/api/v1/registration/dossiers/" + id + "/submit", null, token);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("statut")).isEqualTo("EN_ATTENTE_VERIFICATION");
+
+        // Idempotent : re-soumettre ne casse rien (reponse reseau perdue).
+        ResponseEntity<Map> encore =
+                POST("/api/v1/registration/dossiers/" + id + "/submit", null, token);
+        assertThat(encore.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(encore.getBody().get("dejaSoumis")).isEqualTo(true);
+    }
+
+    @Test
+    void submit_refuse_un_dossier_sans_capture_faciale() {
+        String token = nouveauProspect("nofacesubmit");
+        ResponseEntity<Map> r =
+                POST("/api/v1/registration/dossiers/" + dernierDossier + "/submit", null, token);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Le compte ESPECES saisi a l'inscription est porte des maintenant sur le
+     * profil : c'est lui qui permet au client de soumettre un ordre avant meme
+     * que le back-office ne lui attribue un compte-titres.
+     */
+    @Test
+    void le_compte_especes_est_rattache_au_profil_des_l_inscription() {
+        ResponseEntity<Map> me = GET("/api/v1/auth/me", tokenPrincipal);
+        assertThat(me.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(me.getBody().get("compteEspeces")).isEqualTo("1000500010000004320768");
+        assertThat(me.getBody().get("compteTitres")).isNull();   // attribue par l'agent
+    }
+
+    /** L'agent valide le dossier et saisit LUI-MEME le compte-titres. */
+    @Test
+    void approve_attribue_le_compte_titres_saisi_par_l_agent() {
+        String token = nouveauProspect("approve");
+        String id = dernierDossier;
+        deposerVisageEtPiece(id, token);
+        POST("/api/v1/registration/dossiers/" + id + "/submit", null, token);
+
+        String agent = login("agent@afriland.cm");
+        // La capture faciale doit d'abord etre verifiee : c'est le controle d'identite.
+        ResponseEntity<Map> tot = POST("/api/v1/admin/registrations/" + id + "/approve",
+                Map.of("compteTitres", "037 10001 00000099999"), agent);
+        assertThat(tot.getStatusCode()).as("visage non verifie").isEqualTo(HttpStatus.BAD_REQUEST);
+
+        POST("/api/v1/admin/registrations/" + id + "/face/verify", Map.of("status", "VALIDE"), agent);
+
+        String compteTitres = "037 10001 " + String.format("%011d", Math.abs(id.hashCode()) % 1_000_000);
+        ResponseEntity<Map> ok = POST("/api/v1/admin/registrations/" + id + "/approve",
+                Map.of("compteTitres", compteTitres), agent);
+        assertThat(ok.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(ok.getBody().get("statut")).isEqualTo("VALIDE");
+        assertThat(ok.getBody().get("compteTitres")).isEqualTo(compteTitres);
+    }
+
+    /** Un compte-titres omis reste NULL : le client est « en rouge », pas bloque. */
+    @Test
+    void approve_sans_compte_titres_laisse_le_client_a_completer() {
+        String token = nouveauProspect("approve-vide");
+        String id = dernierDossier;
+        deposerVisageEtPiece(id, token);
+        POST("/api/v1/registration/dossiers/" + id + "/submit", null, token);
+
+        String agent = login("agent@afriland.cm");
+        POST("/api/v1/admin/registrations/" + id + "/face/verify", Map.of("status", "VALIDE"), agent);
+
+        ResponseEntity<Map> ok =
+                POST("/api/v1/admin/registrations/" + id + "/approve", Map.of(), agent);
+        assertThat(ok.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(ok.getBody().get("compteTitres")).isNull();
+        assertThat(ok.getBody().get("compteEspeces")).isNotNull();
+    }
+
+    @Test
+    void reject_exige_un_motif() {
+        String token = nouveauProspect("reject");
+        String id = dernierDossier;
+        deposerVisageEtPiece(id, token);
+        POST("/api/v1/registration/dossiers/" + id + "/submit", null, token);
+
+        String agent = login("agent@afriland.cm");
+        ResponseEntity<Map> sansMotif =
+                POST("/api/v1/admin/registrations/" + id + "/reject", Map.of(), agent);
+        assertThat(sansMotif.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+
+        ResponseEntity<Map> avecMotif = POST("/api/v1/admin/registrations/" + id + "/reject",
+                Map.of("motif", "Piece d'identite illisible"), agent);
+        assertThat(avecMotif.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(avecMotif.getBody().get("statut")).isEqualTo("REJETE");
+    }
+
+    @Test
+    void approve_refuse_un_dossier_non_soumis() {
+        String agent = login("agent@afriland.cm");
+        // dossierId (principal) n'a jamais ete soumis : il est en BROUILLON.
+        ResponseEntity<Map> r =
+                POST("/api/v1/admin/registrations/" + dossierId + "/approve", Map.of(), agent);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Le cœur du correctif : un client auto-inscrit n'a PAS encore de
+     * compte-titres (l'agent l'attribue plus tard) — il doit pouvoir soumettre
+     * son ordre malgre tout. L'ordre part avec un compte-titres vide, que le
+     * back-office voit signale en rouge.
+     */
+    @Test
+    void un_client_sans_compte_titres_peut_soumettre_un_ordre() {
+        String prospect = nouveauProspect("ordre");
+
+        String agent = login("agent@afriland.cm");
+        String sup = login("superviseur@afriland.cm");
+        ResponseEntity<Map> em = POST("/api/v1/emissions", emissionBody(), agent);
+        assertThat(em.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String emId = (String) em.getBody().get("id");
+        ResponseEntity<Map> pub = POST("/api/v1/emissions/" + emId + "/publish", null, sup);
+        assertThat(pub.getStatusCode()).as("publication — %s", pub.getBody())
+                .isEqualTo(HttpStatus.OK);
+
+        ResponseEntity<Map> ordre = POST("/api/v1/orders",
+                Map.of("emissionId", emId, "volume", 2, "tauxSoumis", 5.0), prospect);
+
+        assertThat(ordre.getStatusCode())
+                .as("l'absence de compte-titres ne doit PAS bloquer la soumission — %s",
+                        ordre.getBody())
+                .isEqualTo(HttpStatus.CREATED);
+        assertThat(ordre.getBody().get("id")).isNotNull();
+    }
+
+    Map<String, Object> emissionBody() {
+        String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 10).toUpperCase();
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("code", "BTA-REG-" + suffix);
+        m.put("isin", ("CR" + suffix + "0000000").substring(0, 12).toUpperCase());
+        m.put("libelle", "BTA Auto-inscription 13 semaines");
+        m.put("nature", "BTA");
+        m.put("paysCode", "CMR");
+        m.put("dateEmission", java.time.LocalDate.now().toString());
+        m.put("ouvertureSouscription", java.time.LocalDate.now().plusDays(1) + "T08:00:00Z");
+        m.put("fermetureSouscription", java.time.LocalDate.now().plusDays(8) + "T09:00:00Z");
+        m.put("dateEcheance", java.time.LocalDate.now().plusDays(94).toString());
+        m.put("dateReglement", java.time.LocalDate.now().plusDays(9).toString());
+        m.put("valeurNominaleUnitaire", 1_000_000);
+        m.put("montantGlobal", 5_000_000_000L);
+        m.put("tauxNominal", 0.0);
+        m.put("montantMinimum", 1_000_000);
+        m.put("modeAdjudication", "TAUX");
+        return m;
+    }
+
+    // ─── Helpers de scenario ──────────────────────────────────────────────────
+
+    String dernierDossier;
+
+    /** Cree un prospect distinct (chaque scenario a besoin de son propre dossier). */
+    String nouveauProspect(String tag) {
+        ResponseEntity<Map> r = POST("/api/v1/registration/register", Map.of(
+                "email", tag + "+" + UUID.randomUUID() + "@example.cm", "password", "MotDePasse1",
+                "nom", "TEST", "prenom", tag, "telephone", "+237690000001",
+                "typePersonne", "PP", "compteEspeces", compteEspecesAleatoire()), null);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        dernierDossier = String.valueOf(r.getBody().get("dossierId"));
+        return (String) ((Map) r.getBody().get("auth")).get("accessToken");
+    }
+
+    /** 22 chiffres, uniques : le compte especes est porte sur users (contrainte d'unicite). */
+    private static String compteEspecesAleatoire() {
+        long n = Math.abs(UUID.randomUUID().getMostSignificantBits() % 10_000_000_000_000L);
+        return "100050001" + String.format("%013d", n);
+    }
+
+    void deposerVisageEtPiece(String id, String token) {
+        POST("/api/v1/registration/dossiers/" + id + "/face", Map.of(
+                "imageBase64", IMG, "livenessScore", 0.9, "livenessPassed", true,
+                "challengeType", "BLINK"), token);
+        POST("/api/v1/registration/dossiers/" + id + "/piece-identite", Map.of(
+                "imageBase64", IMG, "cote", "RECTO", "type", "CNI", "texte", "CNI",
+                "nettete", 300, "largeur", 1200, "hauteur", 800), token);
+    }
+
     @Test
     void convention_courante_est_publique() {
         ResponseEntity<Map> r = GET("/api/v1/registration/convention?langue=FR", null);

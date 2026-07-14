@@ -89,15 +89,18 @@ public class ClientController {
     private final AuditService audit;
     private final CredentialDelivery credentials;
     private final cm.afriland.titres.security.SecretCipher cipher;
+    private final cm.afriland.titres.support.AccountNumberGenerator comptes;
 
     public ClientController(JdbcTemplate jdbc, PasswordService password, AuditService audit,
                             CredentialDelivery credentials,
-                            cm.afriland.titres.security.SecretCipher cipher) {
+                            cm.afriland.titres.security.SecretCipher cipher,
+                            cm.afriland.titres.support.AccountNumberGenerator comptes) {
         this.jdbc = jdbc;
         this.password = password;
         this.audit = audit;
         this.credentials = credentials;
         this.cipher = cipher;
+        this.comptes = comptes;
     }
 
     // ─────────────────────────────── DTO ────────────────────────────────────
@@ -297,11 +300,11 @@ public class ClientController {
         // Numeros de compte uniques (verifies en base, anti-collision). Le compte
         // titres est toujours genere ; le compte especes est soit fourni
         // (compteEspecesLie), soit genere distinct du compte titres.
-        String compteTitres = generateUniqueAccount();
+        String compteTitres = comptes.generate();
         String compteEspeces = (req.compteEspecesLie() != null
                 && !req.compteEspecesLie().trim().isEmpty())
                 ? req.compteEspecesLie().trim()
-                : generateUniqueAccount(compteTitres);
+                : comptes.generate(compteTitres);
         long solde = Math.max(0, req.soldeEspecesInitial() == null ? 0 : req.soldeEspecesInitial());
 
         // Mot de passe initial genere aleatoirement (jamais code en dur) : il est
@@ -650,31 +653,7 @@ public class ClientController {
 
     /**
      * Generateur cryptographiquement fort pour les numeros de compte. */
-    private static final java.security.SecureRandom ACCOUNT_RNG = new java.security.SecureRandom();
 
-    /**
-     * Genere un numero de compte ("037 10001 NNNNNNNNNNN") garanti unique en base
-     * — il ne doit apparaitre ni en compte_titres ni en compte_especes — et
-     * distinct des numeros deja choisis dans le meme onboarding. Remplace l'ancien
-     * derive de l'horodatage, qui pouvait collisionner silencieusement.
-     */
-    private String generateUniqueAccount(String... avoid) {
-        java.util.Set<String> taboo = java.util.Set.of(avoid);
-        for (int i = 0; i < 25; i++) {
-            long n = ACCOUNT_RNG.nextLong(100_000_000_000L);
-            String candidate = String.format("037 10001 %011d", n);
-            if (taboo.contains(candidate)) {
-                continue;
-            }
-            Long exists = jdbc.queryForObject(
-                    "SELECT count(*) FROM users WHERE compte_titres = ? OR compte_especes = ?",
-                    Long.class, candidate, candidate);
-            if (exists != null && exists == 0) {
-                return candidate;
-            }
-        }
-        throw new IllegalStateException("Impossible de générer un numéro de compte unique.");
-    }
 
     /**
      * Charge une page de dossiers (profils + enfants groupes) en se limitant

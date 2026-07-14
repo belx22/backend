@@ -113,6 +113,30 @@ public class OrderController {
         return holder != null ? holder : userId;
     }
 
+    /**
+     * Explique <b>pourquoi</b> le compte especes manque, au lieu du seul constat.
+     *
+     * <p>Le cas est anormal : le compte especes est saisi des l'inscription. Il ne
+     * reste qu'un profil cree autrement (import, ancien compte). Un rejet de
+     * dossier explique aussi la situation — on le dit alors franchement plutot que
+     * de renvoyer un « contactez votre agence » opaque.</p>
+     */
+    private String messageSansCompteEspeces(UUID accountId) {
+        List<Map<String, Object>> d = jdbc.queryForList(
+                "SELECT statut, motif_rejet FROM registration_dossiers WHERE user_id = ? "
+                        + "ORDER BY created_at DESC LIMIT 1", accountId);
+        String defaut = "Aucun compte espèces rattaché à votre profil. Contactez votre agence.";
+        if (d.isEmpty()) {
+            return defaut;
+        }
+        Object motif = d.get(0).get("motif_rejet");
+        if ("REJETE".equals(String.valueOf(d.get(0).get("statut")))) {
+            return "Votre dossier d'ouverture de compte a été rejeté"
+                    + (motif == null ? "." : " : " + motif);
+        }
+        return defaut;
+    }
+
     private record SignatoryRow(UUID id, String email, String nom, String telephone) {
     }
 
@@ -403,8 +427,13 @@ public class OrderController {
                 "SELECT compte_titres, compte_especes FROM users WHERE id = ?",
                 (rs, n) -> new String[]{rs.getString("compte_titres"), rs.getString("compte_especes")},
                 account);
-        if (comptes == null || comptes[0] == null || comptes[1] == null) {
-            throw ApiException.badRequest("Aucun compte-titres rattaché à votre profil.");
+        // Le compte-TITRES peut manquer : il est attribue par le back-office, parfois
+        // apres que le client a passe son premier ordre. On ne l'empeche donc PAS de
+        // soumettre — l'ordre part avec un compte-titres NULL et le back-office le
+        // voit signale en rouge. Seul le compte ESPECES, saisi a l'inscription, est
+        // indispensable (c'est lui qui sera debite).
+        if (comptes == null || comptes[1] == null) {
+            throw ApiException.badRequest(messageSansCompteEspeces(account));
         }
 
         long montant;
