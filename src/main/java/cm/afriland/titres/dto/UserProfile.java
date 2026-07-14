@@ -31,10 +31,37 @@ public record UserProfile(
          */
         boolean compteJoint) {
 
+    /**
+     * Profil tel qu'un CLIENT a le droit de le voir : sans solde, et sans compte
+     * de depot.
+     *
+     * <p>Regle unique, a appeler partout ou une reponse part vers un client. Les
+     * deux masquages etaient jusqu'ici appliques separement — et l'un d'eux avait
+     * ete oublie dans les reponses d'authentification, ou le compte de depot
+     * repartait donc en clair.</p>
+     */
+    public UserProfile pourClient() {
+        return withoutBalance().withoutCompteTitres();
+    }
+
     /** Copie du profil dont le solde est efface — destinee aux reponses adressees aux clients. */
     public UserProfile withoutBalance() {
         return new UserProfile(id, nom, prenom, email, role, statut,
                 compteTitres, compteEspeces, null, categorie, typeCompte, telephone,
+                mustChangePassword, compteJoint);
+    }
+
+    /**
+     * Retire le compte de depot (compte-titres, p. ex. {@code CCEICMCXX345}).
+     *
+     * <p>C'est un identifiant <b>interne</b> au depositaire : le back-office s'en
+     * sert, le client ne doit jamais le voir. Le masquer a l'AFFICHAGE ne suffirait
+     * pas — il resterait lisible dans la reponse de l'API ; on l'efface donc a la
+     * source.</p>
+     */
+    public UserProfile withoutCompteTitres() {
+        return new UserProfile(id, nom, prenom, email, role, statut,
+                null, compteEspeces, solde, categorie, typeCompte, telephone,
                 mustChangePassword, compteJoint);
     }
 }

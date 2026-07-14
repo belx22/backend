@@ -72,7 +72,7 @@ class AdminFaceVerificationV22Test {
         String email = "adm+" + UUID.randomUUID() + "@example.cm";
         ResponseEntity<Map> reg = POST("/api/v1/registration/register", Map.of(
                 "email", email, "password", "MotDePasse1", "nom", "ESSOMBA",
-                "typePersonne", "PP", "compteEspeces", "1000500010000004320768"), null);
+                "typePersonne", "PP", "compteEspeces", "10005000905601009000048"), null);
         assertThat(reg.getStatusCode()).isEqualTo(HttpStatus.OK);
         dossierId = String.valueOf(reg.getBody().get("dossierId"));
         String tokenProspect = (String) ((Map) reg.getBody().get("auth")).get("accessToken");

@@ -5,6 +5,7 @@ import java.time.Year;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -823,7 +824,8 @@ public class OrderController {
         boolean pendingResult = o.resultatValideAt() == null && o.resultatPropose() != null;
         return new OrderResponse(o.id(), o.reference(), o.emissionId(), o.emissionCode(), o.isin(),
                 o.nature(), o.emetteur(), o.clientId(), o.clientNom(), o.compteEspeces(),
-                o.compteTitres(), o.volume(), o.montant(), o.tauxSoumis(), o.status(),
+                null,                 // compte de depot (CCEICMCXXnnn) — interne, jamais montre au client
+                o.volume(), o.montant(), o.tauxSoumis(), o.status(),
                 o.dateSoumission(), o.updatedAt(),
                 pendingResult ? null : o.montantAdjuge(),
                 pendingResult ? null : o.tauxAdjuge(),

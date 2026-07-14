@@ -238,7 +238,9 @@ public class ClientController {
     private static ClientDossier scrubBalanceForClient(ClientDossier dossier, AuthUser user) {
         if (!user.isClient() || dossier.compte() == null) return dossier;
         CompteDto c = dossier.compte();
-        CompteDto scrubbed = new CompteDto(c.id(), c.numero(), c.typeCompte(), c.statut(),
+        // Solde ET compte de depot effaces : le second est un identifiant interne au
+        // depositaire (CCEICMCXXnnn), reserve au back-office.
+        CompteDto scrubbed = new CompteDto(c.id(), null, c.typeCompte(), c.statut(),
                 c.dateOuverture(), c.categorie(), c.compteEspecesLie(), 0L,
                 c.adresses(), c.contacts(), c.sousComptes());
         return new ClientDossier(dossier.id(), dossier.type(), dossier.raisonSociale(),
@@ -297,14 +299,14 @@ public class ClientController {
                     "le numéro de chaque sous-compte titres est requis");
         }
 
-        // Numeros de compte uniques (verifies en base, anti-collision). Le compte
-        // titres est toujours genere ; le compte especes est soit fourni
-        // (compteEspecesLie), soit genere distinct du compte titres.
+        // Deux numerotations DISTINCTES : le compte-titres est un compte de depot
+        // (CCEICMCXXnnn, interne au depositaire), le compte especes un RIB de 23
+        // chiffres. Les confondre produirait un « compte bancaire » CCEICMCXX007.
         String compteTitres = comptes.generate();
         String compteEspeces = (req.compteEspecesLie() != null
                 && !req.compteEspecesLie().trim().isEmpty())
                 ? req.compteEspecesLie().trim()
-                : comptes.generate(compteTitres);
+                : comptes.generateCompteEspeces();
         long solde = Math.max(0, req.soldeEspecesInitial() == null ? 0 : req.soldeEspecesInitial());
 
         // Mot de passe initial genere aleatoirement (jamais code en dur) : il est

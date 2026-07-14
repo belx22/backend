@@ -4,6 +4,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -16,6 +17,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import cm.afriland.titres.audit.AuditService;
+import cm.afriland.titres.notif.EmailService;
+import cm.afriland.titres.notif.NotificationService;
 import cm.afriland.titres.dto.AuthResponse;
 import cm.afriland.titres.dto.UserRow;
 import cm.afriland.titres.error.ApiException;
@@ -24,6 +27,7 @@ import cm.afriland.titres.security.AuthUser;
 import cm.afriland.titres.security.ClientIp;
 import cm.afriland.titres.security.PasswordService;
 import cm.afriland.titres.security.RateLimiter;
+import cm.afriland.titres.support.ClientsFbRepository;
 import cm.afriland.titres.support.FaceMatcher;
 import cm.afriland.titres.support.FileStorageService;
 
@@ -63,16 +67,24 @@ public class RegistrationController {
     private final FileStorageService storage;
     private final RateLimiter rateLimiter;
     private final AuditService audit;
+    private final ClientsFbRepository referentiel;
+    private final NotificationService notifications;
+    private final EmailService emails;
 
     public RegistrationController(JdbcTemplate jdbc, PasswordService password,
                                   AuthSessionService session, FileStorageService storage,
-                                  RateLimiter rateLimiter, AuditService audit) {
+                                  RateLimiter rateLimiter, AuditService audit,
+                                  ClientsFbRepository referentiel,
+                                  NotificationService notifications, EmailService emails) {
         this.jdbc = jdbc;
         this.password = password;
         this.session = session;
         this.storage = storage;
         this.rateLimiter = rateLimiter;
         this.audit = audit;
+        this.referentiel = referentiel;
+        this.notifications = notifications;
+        this.emails = emails;
     }
 
     // ─────────────────────────────── DTO ────────────────────────────────────
@@ -85,13 +97,16 @@ public class RegistrationController {
             String prenom,
             String telephone,
             @Pattern(regexp = "PP|PM", message = "type de personne invalide (PP|PM)") String typePersonne,
-            // Compte especes = 22 chiffres, format « 10005 0001 xxxxxxxxxxx xx »
-            // (banque 5 + guichet 4 + compte 11 + cle 2). Stocke sans espaces.
-            @NotBlank @Pattern(regexp = "\\d{22}", message = "le compte especes doit comporter 22 chiffres")
+            // Compte especes = 23 chiffres (RIB) : code banque 10005 + le numero tel
+            // qu'il figure dans la base clients — agence 5 + compte 11 + cle 2.
+            // Ex. « 00090 56010090000 48 » -> « 10005 00090 56010090000 48 ».
+            @NotBlank @Pattern(regexp = "\\d{23}", message = "le compte especes doit comporter 23 chiffres")
             String compteEspeces) {
     }
 
-    record RegisterResponse(UUID dossierId, UUID titulaireId, AuthResponse auth) {
+    /** {@code clientConnu} = le numero de compte figurait dans la base clients importee. */
+    record RegisterResponse(UUID dossierId, UUID titulaireId, AuthResponse auth,
+                            boolean clientConnu) {
     }
 
     record FaceCaptureRequest(
@@ -128,23 +143,42 @@ public class RegistrationController {
 
         String typePersonne = req.typePersonne() == null ? "PP" : req.typePersonne();
         String hash = password.hash(req.password());
+        String compteEspeces = req.compteEspeces().trim();
 
-        // Le compte ESPECES est le seul que le client renseigne : il est porte des
-        // maintenant sur son profil. Le compte-TITRES reste NULL — c'est un agent du
-        // back-office qui l'attribue ; jusque-la le client apparait en rouge cote BO,
-        // sans pour autant etre empeche de soumettre un ordre.
+        // ── Rapprochement avec le referentiel de la banque ────────────────────
+        // Le numero de compte est la clef : s'il figure dans la « BASE CLIENTS »
+        // importee, le prospect est DEJA client — on reprend ses informations et
+        // son compte de depot. Sinon c'est un NOUVEAU CLIENT : il n'a pas de
+        // compte-titres, on previent l'administrateur et on l'invite en agence.
+        // NB : la « categorie » du fichier (Personnes physiques, Societe de Bourse, …)
+        // n'est PAS celle de users (QUALIFIE / NON_QUALIFIE) — on ne la recopie pas.
+        Optional<ClientsFbRepository.ClientFb> connu = referentiel.parCompte(compteEspeces);
+        // Le compte de depot n'est JAMAIS montre au client : il ne sert qu'au back-office.
+        // Il est UNIQUE en base : si un premier titulaire l'a deja pris (compte joint,
+        // ou re-inscription), on ne le rattache pas au second — sans cela l'inscription
+        // echouerait sur une violation de contrainte. Le back-office tranchera.
+        String compteDepot = connu.map(ClientsFbRepository.ClientFb::compteDepot)
+                .filter(c -> !compteTitresDejaPris(c))
+                .orElse(null);
+        String telephone = trimOrNull(req.telephone());
+        if (telephone == null) {
+            telephone = connu.map(ClientsFbRepository.ClientFb::telephone1).orElse(null);
+        }
+
         UUID userId = jdbc.queryForObject(
                 "INSERT INTO users (email, password_hash, role, nom, prenom, telephone, "
-                        + "compte_especes, solde, categorie, must_change_password) "
-                        + "VALUES (?,?,?,?,?,?,?, 0, 'NON_QUALIFIE', FALSE) RETURNING id",
+                        + "compte_especes, compte_titres, solde, categorie, must_change_password) "
+                        + "VALUES (?,?,?,?,?,?,?,?, 0, 'NON_QUALIFIE', FALSE) RETURNING id",
                 UUID.class, email, hash, ROLE_CLIENT_PP,
-                req.nom().trim(), trimOrNull(req.prenom()), trimOrNull(req.telephone()),
-                req.compteEspeces().trim());
+                req.nom().trim(), trimOrNull(req.prenom()), telephone,
+                compteEspeces, compteDepot);
 
         UUID dossierId = jdbc.queryForObject(
-                "INSERT INTO registration_dossiers (user_id, type_personne, compte_especes, statut) "
-                        + "VALUES (?,?,?, '" + STATUT_BROUILLON + "') RETURNING id",
-                UUID.class, userId, typePersonne, req.compteEspeces().trim());
+                "INSERT INTO registration_dossiers (user_id, type_personne, compte_especes, statut, "
+                        + "client_fb_id, client_connu) VALUES (?,?,?, '" + STATUT_BROUILLON + "', ?,?) "
+                        + "RETURNING id",
+                UUID.class, userId, typePersonne, compteEspeces,
+                connu.map(ClientsFbRepository.ClientFb::id).orElse(null), connu.isPresent());
 
         // Titulaire principal pre-rempli depuis le compte (co-titulaires ajoutes plus tard).
         UUID titulaireId = jdbc.queryForObject(
@@ -152,11 +186,55 @@ public class RegistrationController {
                         + "VALUES (?, 'PRINCIPAL', ?, ?, 0) RETURNING id",
                 UUID.class, dossierId, req.nom().trim(), trimOrNull(req.prenom()));
 
+        if (connu.isEmpty()) {
+            signalerNouveauClient(userId, dossierId, email, req.nom().trim(), compteEspeces);
+        }
+
         UserRow user = jdbc.queryForObject(SELECT_USER_BY_ID, UserRow.MAPPER, userId);
         AuthResponse auth = session.issueTokens(user, resp);
-        audit.log(userId.toString(), "INSCRIPTION", AuditService.SUCCES, dossierId.toString(), ip);
+        audit.log(userId.toString(), connu.isPresent() ? "INSCRIPTION" : "INSCRIPTION_NOUVEAU_CLIENT",
+                AuditService.SUCCES, dossierId.toString(), ip);
 
-        return new RegisterResponse(dossierId, titulaireId, auth);
+        return new RegisterResponse(dossierId, titulaireId, auth, connu.isPresent());
+    }
+
+    /**
+     * Compte inconnu du referentiel : l'administrateur est prevenu et le prospect
+     * invite a se presenter en agence — c'est la seule voie pour lui ouvrir un
+     * compte-titres, sans lequel ses ordres ne pourront pas etre executes.
+     */
+    private void signalerNouveauClient(UUID userId, UUID dossierId, String email, String nom,
+                                       String compteEspeces) {
+        notifications.notifyRoles(List.of("ADMIN", "AGENT"), "WARN",
+                "Nouveau client a orienter en agence",
+                nom + " s'est inscrit avec le compte " + compteEspeces
+                        + ", inconnu de la base clients. Aucun compte-titres ne lui est rattache.",
+                dossierId.toString());
+
+        String corps = """
+                <p>Bonjour %s,</p>
+                <p>Votre inscription sur la plateforme Titres d'Afriland First Bank a bien ete
+                enregistree.</p>
+                <p>Le compte <b>%s</b> que vous avez renseigne ne figure pas encore dans notre
+                base clients. Pour ouvrir votre <b>compte-titres</b> et pouvoir effectuer des
+                operations, nous vous invitons a <b>vous presenter dans votre agence</b> muni
+                d'une piece d'identite.</p>
+                <p>Cordialement,<br/>Afriland First Bank</p>
+                """.formatted(nom, compteEspeces);
+        emails.dispatchOne(email, "Ouverture de votre compte-titres — presentez-vous en agence",
+                corps);
+
+        notifications.notify(userId, "WARN", "Compte-titres a ouvrir",
+                "Presentez-vous en agence pour ouvrir votre compte-titres et pouvoir passer des ordres.",
+                dossierId.toString());
+    }
+
+
+    /** {@code users.compte_titres} est UNIQUE : un compte de depot ne sert qu'une fois. */
+    private boolean compteTitresDejaPris(String compteDepot) {
+        Long n = jdbc.queryForObject("SELECT count(*) FROM users WHERE compte_titres = ?",
+                Long.class, compteDepot);
+        return n != null && n > 0;
     }
 
     /** Etat courant du dossier (reprise du wizard). Reserve a son proprietaire. */

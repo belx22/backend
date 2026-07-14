@@ -75,7 +75,7 @@ class SelfRegistrationV22Test {
         ResponseEntity<Map> r = POST("/api/v1/registration/register", Map.of(
                 "email", emailPrincipal, "password", "MotDePasse1", "nom", "NGONO",
                 "prenom", "Alice", "telephone", "+237690000000",
-                "typePersonne", "PP", "compteEspeces", "1000500010000004320768"), null);
+                "typePersonne", "PP", "compteEspeces", "10005000905601009000048"), null);
         assertThat(r.getStatusCode()).as("register").isEqualTo(HttpStatus.OK);
         dossierId = String.valueOf(r.getBody().get("dossierId"));
         Map auth = (Map) r.getBody().get("auth");
@@ -136,7 +136,7 @@ class SelfRegistrationV22Test {
     void register_refuse_un_email_deja_utilise() {
         ResponseEntity<Map> r = POST("/api/v1/registration/register", Map.of(
                 "email", emailPrincipal, "password", "MotDePasse1", "nom", "DUP",
-                "typePersonne", "PP", "compteEspeces", "1000500010000004320768"), null);
+                "typePersonne", "PP", "compteEspeces", "10005000905601009000048"), null);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
     }
 
@@ -260,7 +260,7 @@ class SelfRegistrationV22Test {
     void le_compte_especes_est_rattache_au_profil_des_l_inscription() {
         ResponseEntity<Map> me = GET("/api/v1/auth/me", tokenPrincipal);
         assertThat(me.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(me.getBody().get("compteEspeces")).isEqualTo("1000500010000004320768");
+        assertThat(me.getBody().get("compteEspeces")).isEqualTo("10005000905601009000048");
         assertThat(me.getBody().get("compteTitres")).isNull();   // attribue par l'agent
     }
 
@@ -398,10 +398,10 @@ class SelfRegistrationV22Test {
         return (String) ((Map) r.getBody().get("auth")).get("accessToken");
     }
 
-    /** 22 chiffres, uniques : le compte especes est porte sur users (contrainte d'unicite). */
+    /** RIB de 23 chiffres : code banque 10005 + agence(5) + compte(11) + cle(2). */
     private static String compteEspecesAleatoire() {
-        long n = Math.abs(UUID.randomUUID().getMostSignificantBits() % 10_000_000_000_000L);
-        return "100050001" + String.format("%013d", n);
+        long n = Math.abs(UUID.randomUUID().getMostSignificantBits() % 1_000_000_000_000_000_000L);
+        return "10005" + String.format("%018d", n);
     }
 
     void deposerVisageEtPiece(String id, String token) {

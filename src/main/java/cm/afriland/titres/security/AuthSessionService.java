@@ -50,9 +50,9 @@ public class AuthSessionService {
                 OffsetDateTime.now(ZoneOffset.UTC).plusSeconds(props.getRefreshTokenTtl()));
         setRefreshCookie(resp, refreshToken);
         UserProfile profile = user.toProfile();
-        // Masque le solde dans la reponse d'authentification destinee aux clients.
+        // Masque le solde ET le compte de depot dans la reponse destinee aux clients.
         if (Rbac.isClient(user.role())) {
-            profile = profile.withoutBalance();
+            profile = profile.pourClient();
         }
         // refreshToken = null dans le corps : il vit desormais dans le cookie.
         return new AuthResponse(accessToken, null, "Bearer", props.getAccessTokenTtl(), profile);

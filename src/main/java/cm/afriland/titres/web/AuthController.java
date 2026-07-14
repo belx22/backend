@@ -478,9 +478,11 @@ public class AuthController {
         UserRow row = jdbc.queryForObject(
                 SELECT_USER_BY_ID, UserRow.MAPPER, user.id());
         UserProfile profile = row.toProfile();
-        // Les clients ne doivent jamais consulter leur solde via la plateforme
-        // (defense en profondeur — la source AIF est l'apanage du back-office).
-        return user.isClient() ? profile.withoutBalance() : profile;
+        // Les clients ne doivent voir ni leur solde (la source AIF est l'apanage du
+        // back-office) ni leur compte de depot (identifiant interne au depositaire).
+        return user.isClient()
+                ? profile.pourClient()
+                : profile;
     }
 
     // ──────────────────────── /change-password ──────────────────────────────
@@ -720,9 +722,9 @@ public class AuthController {
                 OffsetDateTime.now(ZoneOffset.UTC).plusSeconds(props.getRefreshTokenTtl()));
         setRefreshCookie(resp, refreshToken);
         UserProfile profile = user.toProfile();
-        // Masque le solde dans la reponse d'authentification destinee aux clients.
+        // Masque le solde ET le compte de depot dans la reponse destinee aux clients.
         if (Rbac.isClient(user.role())) {
-            profile = profile.withoutBalance();
+            profile = profile.pourClient();
         }
         // refreshToken = null dans le corps : il vit desormais dans le cookie.
         return new AuthResponse(accessToken, null, "Bearer",

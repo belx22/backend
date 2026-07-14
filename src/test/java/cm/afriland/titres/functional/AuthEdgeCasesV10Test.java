@@ -364,6 +364,29 @@ class AuthEdgeCasesV10Test {
         assertThat(r.getBody().get("email")).isEqualTo("jean.mballa@example.cm");
         // Un client ne voit jamais son solde via la plateforme.
         assertThat(r.getBody().get("solde")).isNull();
+        // Ni son compte de depot (CCEICMCXXnnn) : identifiant interne au depositaire.
+        assertThat(r.getBody().get("compteTitres")).isNull();
+    }
+
+    /**
+     * Le compte de depot ne doit pas non plus repartir dans la reponse
+     * d'AUTHENTIFICATION : c'est par la qu'il fuyait, le masquage n'ayant ete
+     * pose que sur {@code /me}.
+     */
+    @Test
+    void la_reponse_de_connexion_ne_livre_pas_le_compte_de_depot_au_client() {
+        ResponseEntity<Map> s1 = POST("/api/v1/auth/login",
+                Map.of("email", "jean.mballa@example.cm", "password", "Demo1234"), null);
+        ResponseEntity<Map> s2 = POST("/api/v1/auth/mfa/verify",
+                Map.of("challengeId", s1.getBody().get("challengeId"), "code", "123456"), null);
+
+        assertThat(s2.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Map profil = (Map) s2.getBody().get("user");
+        assertThat(profil).as("profil renvoye a la connexion").isNotNull();
+        assertThat(profil.get("compteTitres")).isNull();
+        assertThat(profil.get("solde")).isNull();
+        // Le compte ESPECES, lui, appartient au client : il doit le voir.
+        assertThat(profil.get("compteEspeces")).isNotNull();
     }
 
     @Test
