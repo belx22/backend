@@ -174,4 +174,47 @@ class SessionInactiviteV27Test {
         assertThat(POST("/api/v1/auth/refresh", Map.of()).getStatusCode())
                 .isEqualTo(HttpStatus.OK);
     }
+
+    // ─── Le second facteur ne doit pas etre contournable ──────────────────────
+
+    /**
+     * Rester sur l'ecran OTP sans rien saisir ne doit JAMAIS reconnecter.
+     *
+     * <p>C'etait la faille : engager une nouvelle connexion laissait intact le
+     * cookie de rafraichissement de la session precedente (valable 30 jours). Le
+     * defi MFA ne protegeait donc rien — il suffisait d'attendre que le jeton
+     * d'acces expire (5 min) pour qu'un rafraichissement rouvre une session, sans
+     * que le code n'ait jamais ete valide.</p>
+     */
+    @Test
+    void engager_une_connexion_revoque_la_session_du_navigateur_AVANT_l_OTP() {
+        connecter("superviseur@afriland.cm");
+        // La session est bien active a ce stade.
+        assertThat(POST("/api/v1/auth/refresh", Map.of()).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        // Nouvelle connexion : on s'arrete a l'ecran OTP, sans saisir le code.
+        ResponseEntity<Map> s1 = POST("/api/v1/auth/login",
+                Map.of("email", "superviseur@afriland.cm", "password", "Demo1234"));
+        assertThat(s1.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(s1.getBody().get("mfaRequired")).isEqualTo(true);
+
+        // Le rafraichissement ne doit plus rien rouvrir : sans OTP, pas de session.
+        assertThat(POST("/api/v1/auth/refresh", Map.of()).getStatusCode())
+                .as("un refresh sans OTP valide rouvrirait une session : le 2e facteur serait contournable")
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    /** Une fois l'OTP saisi, la connexion aboutit normalement. */
+    @Test
+    void apres_l_OTP_la_session_est_bien_ouverte() {
+        connecter("superviseur@afriland.cm");
+        POST("/api/v1/auth/login",
+                Map.of("email", "superviseur@afriland.cm", "password", "Demo1234"));
+        // Refaire une connexion COMPLETE (avec OTP) redonne une session valide.
+        connecter("superviseur@afriland.cm");
+
+        assertThat(POST("/api/v1/auth/refresh", Map.of()).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+    }
 }

@@ -261,9 +261,17 @@ class OrderStatusV10Test {
         assertThat(r.getBody().get("montantAdjuge")).isNull();
     }
 
-    /** Le superviseur ne detient pas ORDER_RESULT : il ne saisit pas l'adjudication. */
+    /**
+     * Le superviseur saisit l'adjudication, au meme titre que l'agent.
+     *
+     * <p>Ce test defendait la regle INVERSE, heritee du modele a deux niveaux ou
+     * l'agent proposait et le superviseur validait. L'adjudication est passee a un
+     * seul niveau : le resultat prend effet immediatement (ORDER_RESULT). Le
+     * superviseur, prive de cette permission, restait bloque — il saisissait un
+     * resultat qui n'etait jamais applique.</p>
+     */
     @Test
-    void le_superviseur_ne_saisit_pas_l_adjudication() {
+    void le_superviseur_saisit_l_adjudication_comme_l_agent() {
         String ord = submitOrder(5.52);
         changeStatus(ord, Map.of("status", "EN_ATTENTE_ADJUDICATION"), tokAgent);
 
@@ -274,7 +282,8 @@ class OrderStatusV10Test {
         result.put("tauxAdjuge", 5.52);
         ResponseEntity<Map> r = changeStatus(ord, result, tokSup);
 
-        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("status")).isEqualTo("TOTALEMENT_RETENU");
     }
 
     /** Le commentaire de resultat est normalise (espaces de bord retires). */
@@ -334,5 +343,44 @@ class OrderStatusV10Test {
 
         ResponseEntity<Map> vueAgent = GET("/api/v1/orders/" + ord, tokAgent);
         assertThat(vueAgent.getBody().get("notes")).isEqualTo("Dossier a surveiller");
+    }
+
+    // ─── Le superviseur applique le resultat d'adjudication ───────────────────
+
+    /**
+     * Un superviseur doit pouvoir APPLIQUER un resultat d'adjudication.
+     *
+     * <p>C'etait impossible : l'adjudication est passee a un seul niveau (le
+     * resultat prend effet immediatement, permission ORDER_RESULT) mais le
+     * superviseur ne detenait plus que ORDER_RESULT_VALIDATE — la permission
+     * d'une etape disparue. Il saisissait donc son resultat, se voyait refuser
+     * l'application (403), et l'ordre restait indefiniment en attente.</p>
+     */
+    @Test
+    void le_superviseur_applique_le_resultat_et_l_ordre_sort_de_l_attente() {
+        String ord = submitOrder(5.61);
+        changeStatus(ord, Map.of("status", "EN_ATTENTE_ADJUDICATION"), tokAgent);
+
+        ResponseEntity<Map> r = changeStatus(ord, Map.of(
+                "status", "TOTALEMENT_RETENU", "tauxAdjuge", 5.61), tokSup);
+
+        assertThat(r.getStatusCode())
+                .as("le superviseur doit pouvoir appliquer le resultat — %s", r.getBody())
+                .isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("status")).isEqualTo("TOTALEMENT_RETENU");
+        assertThat(r.getBody().get("resultatValideAt"))
+                .as("le resultat est applique, pas seulement propose").isNotNull();
+    }
+
+    /** Le client, lui, ne peut evidemment pas s'auto-adjuger son ordre. */
+    @Test
+    void un_client_ne_peut_pas_appliquer_de_resultat() {
+        String ord = submitOrder(5.62);
+        changeStatus(ord, Map.of("status", "EN_ATTENTE_ADJUDICATION"), tokAgent);
+
+        ResponseEntity<Map> r = changeStatus(ord, Map.of("status", "TOTALEMENT_RETENU"), tokClient);
+
+        assertThat(r.getStatusCode()).as("reponse = %s", r.getBody())
+                .isEqualTo(HttpStatus.FORBIDDEN);
     }
 }

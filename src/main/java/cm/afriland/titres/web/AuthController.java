@@ -169,7 +169,9 @@ public class AuthController {
     // ──────────────────────────── /login ────────────────────────────────────
 
     @PostMapping("/login")
-    public Map<String, Object> login(@Valid @RequestBody LoginRequest req, ClientIp clientIp) {
+    public Map<String, Object> login(@Valid @RequestBody LoginRequest req, ClientIp clientIp,
+                                     @CookieValue(name = RT_COOKIE, required = false) String rtCookie,
+                                     HttpServletResponse resp) {
         String ip = clientIp.value();
         // Quota par endpoint : les echecs de /login ne doivent pas epuiser le
         // quota de /mfa/verify ni de /refresh (cles distinctes par IP).
@@ -215,6 +217,22 @@ public class AuthController {
         // Mot de passe correct : remise a zero du compteur d'echecs.
         jdbc.update("UPDATE users SET failed_login_attempts = 0, locked_until = NULL, "
                 + "updated_at = now() WHERE id = ?", user.id());
+
+        // SECURITE — La session encore ouverte dans CE navigateur est revoquee des
+        // maintenant, avant meme que l'OTP ne soit demande.
+        //
+        // Sans cela, le defi MFA ne protegeait rien : un navigateur conservant un
+        // cookie de rafraichissement valide (30 jours) restait rafraichissable. Il
+        // suffisait donc de rester sur l'ecran OTP sans rien saisir — le premier
+        // rafraichissement venu (re-ouverture de l'application, jeton d'acces
+        // expire au bout de 5 min) rouvrait une session SANS que le code n'ait
+        // jamais ete valide. Le second facteur etait contournable.
+        //
+        // On ne revoque que le jeton presente par ce navigateur : les sessions des
+        // autres appareils de l'utilisateur n'ont pas a tomber parce qu'il se
+        // reconnecte ici.
+        revoquerSessionDuNavigateur(rtCookie, user.id(), ip);
+        clearRefreshCookie(resp);
 
         // Defi MFA : code OTP genere aleatoirement selon les parametres « serveur
         // OTP » de l'admin (longueur, TTL), stocke sous forme d'empreinte.
@@ -469,6 +487,28 @@ public class AuthController {
         clearRefreshCookie(resp);
         audit.log(user.id().toString(), "DECONNEXION", AuditService.SUCCES, "—", clientIp.value());
         return Map.of(CLE_MESSAGE, "Déconnexion effectuée.");
+    }
+
+    /**
+     * Revoque le jeton de rafraichissement presente par le navigateur qui engage
+     * une nouvelle connexion.
+     *
+     * <p>Sans effet si aucun cookie n'est presente (premiere connexion), ou s'il
+     * appartient a un autre utilisateur : on ne revoque que ce que ce navigateur
+     * detient reellement pour ce compte.</p>
+     */
+    private void revoquerSessionDuNavigateur(String rtCookie, UUID userId, String ip) {
+        if (rtCookie == null || rtCookie.isBlank()) {
+            return;
+        }
+        int revoques = jdbc.update(
+                "UPDATE refresh_tokens SET revoked = TRUE "
+                        + "WHERE token_hash = ? AND user_id = ? AND revoked = FALSE",
+                Tokens.sha256Hex(rtCookie), userId);
+        if (revoques > 0) {
+            audit.log(userId.toString(), "SESSION_REVOQUEE_NOUVELLE_CONNEXION",
+                    AuditService.SUCCES, "—", ip);
+        }
     }
 
     // ───────────────────────────── /me ──────────────────────────────────────

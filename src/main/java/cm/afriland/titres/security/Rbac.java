@@ -59,12 +59,19 @@ public class Rbac {
         m.put(AGENT, EnumSet.of(Permission.EMISSION_CREATE, Permission.ORDER_VALIDATE,
                 Permission.ORDER_RESULT, Permission.CLIENT_CREATE, Permission.CLIENT_MANAGE,
                 Permission.DOCUMENT_UPLOAD, Permission.ACCOUNT_BALANCE_READ));
-        // SUPERVISEUR — validation : publie les emissions et VALIDE l'adjudication
-        // saisie par l'agent (ORDER_RESULT_VALIDATE). Pas d'audit (reserve a l'admin).
+        // SUPERVISEUR — publie les emissions et SAISIT l'adjudication, comme l'agent.
+        //
+        // L'adjudication est passee a un seul niveau : le resultat saisi prend effet
+        // immediatement (ORDER_RESULT). Le superviseur ne detenait plus que
+        // ORDER_RESULT_VALIDATE — la permission de valider une proposition d'agent,
+        // etape qui n'existe plus. Il se voyait donc refuser l'application d'un
+        // resultat qu'il est le mieux place pour appliquer. Il conserve
+        // ORDER_RESULT_VALIDATE pour les ordres restes en attente de l'ancien flux.
         m.put(SUPERVISEUR, EnumSet.of(Permission.EMISSION_CREATE, Permission.EMISSION_VALIDATE,
-                Permission.ORDER_VALIDATE, Permission.ORDER_RESULT_VALIDATE, Permission.CLIENT_CREATE,
-                Permission.CLIENT_MANAGE, Permission.REPORTING_READ, Permission.CONFIG_MARCHE,
-                Permission.DOCUMENT_UPLOAD, Permission.ACCOUNT_BALANCE_READ));
+                Permission.ORDER_VALIDATE, Permission.ORDER_RESULT, Permission.ORDER_RESULT_VALIDATE,
+                Permission.CLIENT_CREATE, Permission.CLIENT_MANAGE, Permission.REPORTING_READ,
+                Permission.CONFIG_MARCHE, Permission.DOCUMENT_UPLOAD,
+                Permission.ACCOUNT_BALANCE_READ));
         // ADMIN — profils internes, audit et configuration. Ne fait AUCUNE
         // adjudication (ni saisie ni validation d'ordres). Peut publier les emissions.
         m.put(ADMIN, EnumSet.of(Permission.EMISSION_VALIDATE, Permission.EMISSION_DELETE,

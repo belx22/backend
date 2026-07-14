@@ -68,6 +68,18 @@ class RbacTest {
         assertTrue(Rbac.roleHasPermission("SUPERVISEUR", Permission.ORDER_RESULT_VALIDATE));
     }
 
+    /**
+     * L'adjudication ne compte plus qu'un seul niveau : le resultat saisi prend
+     * effet immediatement (ORDER_RESULT). Le superviseur ne detenait plus que
+     * ORDER_RESULT_VALIDATE — la permission d'une etape disparue — et se voyait
+     * donc refuser l'application du resultat qu'il venait de saisir.
+     */
+    @Test
+    void superviseur_peut_SAISIR_le_resultat_d_adjudication() {
+        assertTrue(Rbac.roleHasPermission("SUPERVISEUR", Permission.ORDER_RESULT),
+                "un superviseur doit pouvoir appliquer un resultat d'adjudication");
+    }
+
     @Test
     void superviseur_peut_lire_reporting() {
         assertTrue(Rbac.roleHasPermission("SUPERVISEUR", Permission.REPORTING_READ));
