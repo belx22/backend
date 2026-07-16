@@ -79,10 +79,14 @@ public class OrderController {
             + "o.ip_soumission, o.date_soumission, o.updated_at, "
             + "e.code AS emission_code, e.nature AS emission_nature, e.pays_code AS emission_pays, "
             + "u.nom AS client_nom, u.prenom AS client_prenom, "
+            + "cp.dirigeant AS client_dirigeant, "
+            + "COALESCE(cp.type_personne, CASE WHEN u.role = 'CLIENT_PM' THEN 'PM' ELSE 'PP' END) "
+            + "  AS client_type_personne, "
             + "va.nom AS agent_nom, va.prenom AS agent_prenom "
             + "FROM orders o "
             + "JOIN emissions e ON e.id = o.emission_id "
             + "JOIN users u ON u.id = o.client_id "
+            + "LEFT JOIN client_profiles cp ON cp.user_id = o.client_id "
             + "LEFT JOIN users va ON va.id = o.validated_by_agent";
 
     /** Delai de validation des co-signataires d'un compte joint (minutes). */
@@ -151,7 +155,8 @@ public class OrderController {
             String commentaireResultat, String motifAnnulation, String canal, String notes,
             String ipSoumission, String signatureData, Boolean signatureVerified, UUID validatedByAgent,
             String validatedByAgentNom, OffsetDateTime dateValidationAgent,
-            String resultatPropose, OffsetDateTime resultatProposeAt, OffsetDateTime resultatValideAt) {
+            String resultatPropose, OffsetDateTime resultatProposeAt, OffsetDateTime resultatValideAt,
+            String dirigeant, String typePersonne) {
     }
 
     record CreateOrderRequest(
@@ -234,7 +239,9 @@ public class OrderController {
                 rs.getObject("date_validation_agent", OffsetDateTime.class),
                 rs.getString("resultat_propose"),
                 rs.getObject("resultat_propose_at", OffsetDateTime.class),
-                rs.getObject("resultat_valide_at", OffsetDateTime.class));
+                rs.getObject("resultat_valide_at", OffsetDateTime.class),
+                rs.getString("client_dirigeant"),
+                rs.getString("client_type_personne"));
     };
 
     // ───────────────────────────── Handlers ─────────────────────────────────
@@ -840,7 +847,8 @@ public class OrderController {
                 o.dateValidationAgent(),
                 pendingResult ? null : o.resultatPropose(),
                 pendingResult ? null : o.resultatProposeAt(),
-                o.resultatValideAt());
+                o.resultatValideAt(),
+                o.dirigeant(), o.typePersonne());
     }
 
     private static String resultLabel(String status) {

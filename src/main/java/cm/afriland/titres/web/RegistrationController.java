@@ -191,7 +191,10 @@ public class RegistrationController {
         }
 
         UserRow user = jdbc.queryForObject(SELECT_USER_BY_ID, UserRow.MAPPER, userId);
-        AuthResponse auth = session.issueTokens(user, resp);
+        // Jeton RESTREINT au parcours d'inscription, sans jeton de rafraichissement :
+        // le prospect televerse son dossier maintenant, mais n'ouvre pas de session
+        // persistante (impossible d'etre connecte sans avoir passe l'OTP).
+        AuthResponse auth = session.issueRegistrationAccess(user);
         audit.log(userId.toString(), connu.isPresent() ? "INSCRIPTION" : "INSCRIPTION_NOUVEAU_CLIENT",
                 AuditService.SUCCES, dossierId.toString(), ip);
 
@@ -220,7 +223,7 @@ public class RegistrationController {
                 operations, nous vous invitons a <b>vous presenter dans votre agence</b> muni
                 d'une piece d'identite.</p>
                 <p>Cordialement,<br/>Afriland First Bank</p>
-                """.formatted(nom, compteEspeces);
+                """.formatted(nom, cm.afriland.titres.notif.CredentialDelivery.maskCompte(compteEspeces));
         emails.dispatchOne(email, "Ouverture de votre compte-titres — presentez-vous en agence",
                 corps);
 

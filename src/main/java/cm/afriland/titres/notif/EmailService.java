@@ -29,6 +29,14 @@ public class EmailService {
 
     public enum Status { SENT, SIMULATED, FAILED }
 
+    /** Nombre total de tentatives d'envoi en arriere-plan (1 initiale + reprises). */
+    private static final int MAX_ATTEMPTS = 5;
+    /** Attente avant chaque tentative (ms). La 1re est immediate ; les suivantes
+     *  s'etalent jusqu'a ~110 s au total, de quoi encaisser une panne DNS/reseau
+     *  de plusieurs minutes (ex. resolution intermittente de l'hote SMTP) sans
+     *  perdre silencieusement l'e-mail. */
+    private static final long[] BACKOFF_MS = {0L, 5_000L, 15_000L, 30_000L, 60_000L};
+
     private final MailSettingsService settings;
 
     /** Pool d'envoi en arriere-plan : l'appelant (OTP, reinitialisation) n'attend
@@ -66,13 +74,48 @@ public class EmailService {
             send(recipients, subject, htmlBody); // simulation : instantanee
             return;
         }
-        mailPool.submit(() -> {
-            try {
-                send(recipients, subject, htmlBody);
-            } catch (RuntimeException e) {
-                log.warn("Echec d'envoi e-mail (arriere-plan) : {}", e.getMessage());
+        mailPool.submit(() -> sendWithRetry(recipients, subject, htmlBody));
+    }
+
+    /**
+     * Envoi en arriere-plan avec reprise : les incidents transitoires (coupure DNS,
+     * SMTP momentanement injoignable) ne doivent pas faire perdre SILENCIEUSEMENT un
+     * code OTP ou un lien de reinitialisation — l'appelant a deja repondu « code
+     * envoye » a l'utilisateur. On retente donc {@link #MAX_ATTEMPTS} fois avec un
+     * back-off avant d'abandonner. Reserve aux envois mono-destinataire (OTP,
+     * reinitialisation, ouverture de compte) : une reprise ne peut pas creer de
+     * doublon pour un destinataire deja servi.
+     */
+    private void sendWithRetry(List<String> recipients, String subject, String htmlBody) {
+        for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+            if (BACKOFF_MS[attempt] > 0 && !sleep(BACKOFF_MS[attempt])) {
+                return; // thread interrompu (arret de l'application) : on abandonne.
             }
-        });
+            Status status;
+            try {
+                status = send(recipients, subject, htmlBody);
+            } catch (RuntimeException e) {
+                status = Status.FAILED;
+                log.warn("Echec d'envoi e-mail (arriere-plan, tentative {}/{}) : {}",
+                        attempt + 1, MAX_ATTEMPTS, e.getMessage());
+            }
+            if (status != Status.FAILED) {
+                return; // SENT ou SIMULATED : termine.
+            }
+        }
+        log.warn("E-mail non distribue apres {} tentatives. Sujet=\"{}\" destinataires={}",
+                MAX_ATTEMPTS, subject, recipients.size());
+    }
+
+    /** Attente interruptible ; renvoie {@code false} si le thread a ete interrompu. */
+    private static boolean sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     /** Envoi unitaire NON bloquant (OTP, lien de reinitialisation). */
