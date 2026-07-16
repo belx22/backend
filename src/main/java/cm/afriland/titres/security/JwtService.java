@@ -31,17 +31,28 @@ public class JwtService {
         this.accessTtl = props.getAccessTokenTtl();
     }
 
-    /** Genere un jeton d'acces signe pour un utilisateur donne. */
+    /** Genere un jeton d'acces signe (session complete) pour un utilisateur donne. */
     public String issue(UUID userId, String email, String role, boolean mustChangePassword) {
+        return issue(userId, email, role, mustChangePassword, AuthUser.SCOPE_FULL, accessTtl);
+    }
+
+    /**
+     * Genere un jeton d'acces signe avec une portee et une duree explicites.
+     * Utilise pour le jeton d'inscription (portee restreinte, sans jeton de
+     * rafraichissement : aucune session persistante n'est ouverte sans OTP).
+     */
+    public String issue(UUID userId, String email, String role, boolean mustChangePassword,
+                        String scope, long ttlSeconds) {
         Instant now = Instant.now();
         return Jwts.builder()
                 .subject(userId.toString())
                 .claim("email", email)
                 .claim("role", role)
                 .claim("mcp", mustChangePassword)
+                .claim("scope", scope)
                 .id(UUID.randomUUID().toString())
                 .issuedAt(Date.from(now))
-                .expiration(Date.from(now.plusSeconds(accessTtl)))
+                .expiration(Date.from(now.plusSeconds(ttlSeconds)))
                 .signWith(key)
                 .compact();
     }
@@ -55,10 +66,13 @@ public class JwtService {
                 .parseSignedClaims(token)
                 .getPayload();
         Boolean mcp = claims.get("mcp", Boolean.class);
+        // Jetons anterieurs (sans claim scope) = session complete, par compatibilite.
+        String scope = claims.get("scope", String.class);
         return new AuthUser(
                 UUID.fromString(claims.getSubject()),
                 claims.get("email", String.class),
                 claims.get("role", String.class),
-                Boolean.TRUE.equals(mcp));
+                Boolean.TRUE.equals(mcp),
+                scope == null ? AuthUser.SCOPE_FULL : scope);
     }
 }

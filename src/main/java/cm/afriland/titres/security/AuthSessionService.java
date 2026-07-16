@@ -28,6 +28,14 @@ public class AuthSessionService {
     /** Chemin du cookie : envoye uniquement aux routes d'authentification. */
     public static final String RT_COOKIE_PATH = "/api/v1/auth";
 
+    /**
+     * Duree du jeton d'inscription : assez longue pour televerser la capture
+     * faciale et les pieces, mais SANS jeton de rafraichissement. Aucune session
+     * ne survit donc a un rechargement de page : pour utiliser la plateforme, le
+     * client doit se connecter normalement (avec OTP).
+     */
+    private static final long REGISTRATION_TOKEN_TTL_SECONDS = 900;
+
     private final JdbcTemplate jdbc;
     private final JwtService jwt;
     private final AppProperties props;
@@ -56,6 +64,23 @@ public class AuthSessionService {
         }
         // refreshToken = null dans le corps : il vit desormais dans le cookie.
         return new AuthResponse(accessToken, null, "Bearer", props.getAccessTokenTtl(), profile);
+    }
+
+    /**
+     * Emet un jeton d'acces RESTREINT au parcours d'inscription : portee
+     * {@link AuthUser#SCOPE_REGISTRATION}, duree courte, et surtout AUCUN jeton
+     * de rafraichissement (ni cookie ni ligne en base). Le prospect peut ainsi
+     * televerser son dossier immediatement, mais il n'obtient pas de session
+     * persistante — impossible d'etre « connecte » sans avoir passe l'OTP.
+     */
+    public AuthResponse issueRegistrationAccess(UserRow user) {
+        String accessToken = jwt.issue(user.id(), user.email(), user.role(),
+                user.mustChangePassword(), AuthUser.SCOPE_REGISTRATION, REGISTRATION_TOKEN_TTL_SECONDS);
+        UserProfile profile = user.toProfile();
+        if (Rbac.isClient(user.role())) {
+            profile = profile.pourClient();
+        }
+        return new AuthResponse(accessToken, null, "Bearer", REGISTRATION_TOKEN_TTL_SECONDS, profile);
     }
 
     /**

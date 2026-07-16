@@ -341,7 +341,10 @@ class SelfRegistrationV22Test {
      */
     @Test
     void un_client_sans_compte_titres_peut_soumettre_un_ordre() {
-        String prospect = nouveauProspect("ordre");
+        // Le prospect s'inscrit (jeton d'inscription, insuffisant pour transiger)
+        // PUIS se connecte avec OTP : un ordre exige une session complete.
+        nouveauProspect("ordre");
+        String prospect = loginClient(dernierEmailProspect, "MotDePasse1");
 
         String agent = login("agent@afriland.cm");
         String sup = login("superviseur@afriland.cm");
@@ -360,6 +363,28 @@ class SelfRegistrationV22Test {
                         ordre.getBody())
                 .isEqualTo(HttpStatus.CREATED);
         assertThat(ordre.getBody().get("id")).isNotNull();
+    }
+
+    /**
+     * Securite : le jeton d'inscription ne vaut PAS session generale. Il autorise
+     * a completer son propre dossier, mais aucune operation sensible — sans quoi
+     * un compte serait exploitable sans avoir passe l'OTP.
+     */
+    @Test
+    void un_jeton_d_inscription_ne_permet_aucune_operation_sensible() {
+        String jeton = nouveauProspect("scope");
+
+        // Autorise : le parcours d'inscription (lecture de son dossier).
+        assertThat(GET("/api/v1/registration/dossiers/" + dernierDossier, jeton).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        // Refuse (401) : passer un ordre avec un simple jeton d'inscription.
+        ResponseEntity<Map> ordre = POST("/api/v1/orders",
+                Map.of("emissionId", UUID.randomUUID().toString(), "volume", 1, "tauxSoumis", 5.0),
+                jeton);
+        assertThat(ordre.getStatusCode())
+                .as("un jeton d'inscription ne doit pas pouvoir transiger — %s", ordre.getBody())
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 
     Map<String, Object> emissionBody() {
@@ -386,16 +411,32 @@ class SelfRegistrationV22Test {
     // ─── Helpers de scenario ──────────────────────────────────────────────────
 
     String dernierDossier;
+    String dernierEmailProspect;
 
     /** Cree un prospect distinct (chaque scenario a besoin de son propre dossier). */
     String nouveauProspect(String tag) {
+        String email = tag + "+" + UUID.randomUUID() + "@example.cm";
+        dernierEmailProspect = email;
         ResponseEntity<Map> r = POST("/api/v1/registration/register", Map.of(
-                "email", tag + "+" + UUID.randomUUID() + "@example.cm", "password", "MotDePasse1",
+                "email", email, "password", "MotDePasse1",
                 "nom", "TEST", "prenom", tag, "telephone", "+237690000001",
                 "typePersonne", "PP", "compteEspeces", compteEspecesAleatoire()), null);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
         dernierDossier = String.valueOf(r.getBody().get("dossierId"));
         return (String) ((Map) r.getBody().get("auth")).get("accessToken");
+    }
+
+    /** Connexion complete (mot de passe + OTP) d'un client auto-inscrit. */
+    String loginClient(String email, String motDePasse) {
+        ResponseEntity<Map> s1 = POST("/api/v1/auth/login",
+                Map.of("email", email, "password", motDePasse), null);
+        assertThat(s1.getStatusCode()).as("login client — %s", s1.getBody())
+                .isEqualTo(HttpStatus.OK);
+        ResponseEntity<Map> s2 = POST("/api/v1/auth/mfa/verify",
+                Map.of("challengeId", s1.getBody().get("challengeId"), "code", "123456"), null);
+        assertThat(s2.getStatusCode()).as("otp client — %s", s2.getBody())
+                .isEqualTo(HttpStatus.OK);
+        return (String) s2.getBody().get("accessToken");
     }
 
     /** RIB de 23 chiffres : code banque 10005 + agence(5) + compte(11) + cle(2). */

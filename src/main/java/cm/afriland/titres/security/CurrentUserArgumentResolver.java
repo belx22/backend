@@ -7,6 +7,7 @@ import org.springframework.web.method.support.HandlerMethodArgumentResolver;
 import org.springframework.web.method.support.ModelAndViewContainer;
 
 import cm.afriland.titres.error.ApiException;
+import jakarta.servlet.http.HttpServletRequest;
 
 /**
  * Resout les parametres de controleur {@link AuthUser} et {@link OptionalAuthUser}
@@ -58,6 +59,27 @@ public class CurrentUserArgumentResolver implements HandlerMethodArgumentResolve
         } catch (RuntimeException e) {
             throw ApiException.unauthorized("Jeton d'acces invalide ou expire.");
         }
+
+        // Un jeton d'inscription (portee REGISTRATION) n'est PAS une session
+        // generale : il n'autorise que le parcours d'inscription (et la lecture de
+        // son propre profil / la deconnexion). Sur toute autre route, il est rejete
+        // — sans cela un compte serait exploitable sans avoir passe l'OTP.
+        if (user.isRegistrationScoped() && !registrationScopeAutorise(webRequest)) {
+            throw ApiException.unauthorized(
+                    "Jeton d'inscription : acces limite au parcours d'inscription. Connectez-vous.");
+        }
         return optional ? new OptionalAuthUser(user) : user;
+    }
+
+    /** Routes qu'un jeton d'inscription peut atteindre (parcours de depot + profil). */
+    private static boolean registrationScopeAutorise(NativeWebRequest webRequest) {
+        HttpServletRequest req = webRequest.getNativeRequest(HttpServletRequest.class);
+        String path = req == null ? null : req.getRequestURI();
+        if (path == null) {
+            return false;
+        }
+        return path.startsWith("/api/v1/registration/")
+                || path.equals("/api/v1/auth/me")
+                || path.equals("/api/v1/auth/logout");
     }
 }
