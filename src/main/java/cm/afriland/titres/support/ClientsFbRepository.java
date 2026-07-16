@@ -35,6 +35,18 @@ public class ClientsFbRepository {
                            String telephone1, String telephone2, String email) {
     }
 
+    /** Issue d'un import ligne par ligne (cf. {@link #upsert}). */
+    public enum UpsertOutcome {
+        /** Ligne inseree ou mise a jour avec succes. */
+        IMPORTE,
+        /** Numero de compte absent ou mal forme (18 chiffres attendus). */
+        NUMERO_INVALIDE,
+        /** Meme nom+prenom, categorie et telephone qu'une AUTRE ligne deja
+         *  en base : tres probablement le meme client saisi deux fois sous un
+         *  numero de compte different (erreur de saisie du fichier source). */
+        DOUBLON_IDENTITE,
+    }
+
     /**
      * Retrouve un client par son compte especes (23 chiffres) OU par le numero
      * brut du fichier (18 chiffres) : le prospect saisit le RIB complet, mais le
@@ -66,14 +78,34 @@ public class ClientsFbRepository {
      * Insere ou met a jour une ligne du referentiel (import idempotent : re-importer
      * le meme fichier rafraichit les lignes au lieu de les dupliquer).
      *
-     * @return true si la ligne a ete inseree ou modifiee
+     * @return l'issue de l'import pour cette ligne (cf. {@link UpsertOutcome})
      */
-    public boolean upsert(Map<String, Object> ligne, UUID par) {
+    public UpsertOutcome upsert(Map<String, Object> ligne, UUID par) {
         String numero = normaliser(texte(ligne.get("numeroCompte")));
         if (numero == null || !numero.matches("\\d{18}")) {
-            return false;   // ligne inexploitable : signalee a l'agent, pas importee
+            return UpsertOutcome.NUMERO_INVALIDE;   // ligne inexploitable : signalee a l'agent, pas importee
         }
-        return jdbc.update("""
+
+        String nomPrenom = texte(ligne.get("nomPrenom"));
+        String categorie = texte(ligne.get("categorie"));
+        String telephone1 = texte(ligne.get("telephone1"));
+
+        // Doublon d'identite : le meme client ne doit pas se retrouver deux fois
+        // sous des numeros de compte differents (erreur de saisie frequente dans
+        // le fichier source). On ne bloque que si les 3 champs identifiants sont
+        // TOUS renseignes ET correspondent a une AUTRE ligne deja en base — une
+        // comparaison avec des champs vides ne permettrait aucune conclusion.
+        if (nomPrenom != null && categorie != null && telephone1 != null) {
+            Long doublons = jdbc.queryForObject(
+                    "SELECT count(*) FROM clients_fb WHERE lower(nom_prenom) = lower(?) "
+                            + "AND lower(categorie) = lower(?) AND telephone1 = ? AND numero_compte <> ?",
+                    Long.class, nomPrenom, categorie, telephone1, numero);
+            if (doublons != null && doublons > 0) {
+                return UpsertOutcome.DOUBLON_IDENTITE;
+            }
+        }
+
+        jdbc.update("""
                 INSERT INTO clients_fb (nom_prenom, numero_compte, agence, matricule, categorie,
                         compte_depot, assujetti_taxes, localisation, dirigeant, telephone1,
                         telephone2, email, imported_by)
@@ -87,12 +119,13 @@ public class ClientsFbRepository {
                     telephone1 = EXCLUDED.telephone1, telephone2 = EXCLUDED.telephone2,
                     email = EXCLUDED.email, imported_at = now(), imported_by = EXCLUDED.imported_by
                 """,
-                texte(ligne.get("nomPrenom")), numero,
+                nomPrenom, numero,
                 agence(ligne.get("agence"), numero), texte(ligne.get("matricule")),
-                texte(ligne.get("categorie")), texte(ligne.get("compteDepot")),
+                categorie, texte(ligne.get("compteDepot")),
                 oui(ligne.get("assujettiTaxes")), texte(ligne.get("localisation")),
-                texte(ligne.get("dirigeant")), texte(ligne.get("telephone1")),
-                texte(ligne.get("telephone2")), texte(ligne.get("email")), par) > 0;
+                texte(ligne.get("dirigeant")), telephone1,
+                texte(ligne.get("telephone2")), texte(ligne.get("email")), par);
+        return UpsertOutcome.IMPORTE;
     }
 
     /** L'agence est les 5 premiers chiffres du numero — la colonne du fichier n'est qu'un rappel. */

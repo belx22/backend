@@ -202,6 +202,43 @@ class ClientsFbV29Test {
     }
 
     @Test
+    void refuse_un_doublon_d_identite_sous_un_autre_numero_de_compte() {
+        // Ligne de reference (idempotent : deja presente ou creee ici).
+        POST("/api/v1/admin/clients-fb/import", Map.of("lignes", List.of(ligne())), agent);
+
+        // Meme nom+prenom, categorie et telephone que ligne() (MEKULU M /
+        // Personnes physiques / 222223437), mais un numero de compte DIFFERENT :
+        // tres probablement le meme client saisi deux fois -> doit etre ecarte,
+        // pas importe comme un nouveau client.
+        String autreNumero = numeroFichier();
+        ResponseEntity<Map> r = POST("/api/v1/admin/clients-fb/import",
+                Map.of("lignes", List.of(ligne(autreNumero, depot(autreNumero)))), agent);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("importees")).isEqualTo(0);
+        assertThat(r.getBody().get("doublons")).isEqualTo(1);
+
+        // Le doublon n'a pas ete cree en base.
+        assertThat(pageDe("?q=" + autreNumero)).isEmpty();
+    }
+
+    @Test
+    void categorie_differente_n_est_pas_consideree_comme_un_doublon() {
+        POST("/api/v1/admin/clients-fb/import", Map.of("lignes", List.of(ligne())), agent);
+
+        // Meme nom+prenom et telephone, mais categorie differente : peut etre
+        // une personne distincte (nom courant) -> ne doit PAS etre bloque.
+        String autreNumero = numeroFichier();
+        Map<String, Object> autre = ligne(autreNumero, depot(autreNumero));
+        autre.put("categorie", "Personne morale");
+        ResponseEntity<Map> r = POST("/api/v1/admin/clients-fb/import",
+                Map.of("lignes", List.of(autre)), agent);
+
+        assertThat(r.getBody().get("importees")).isEqualTo(1);
+        assertThat(r.getBody().get("doublons")).isEqualTo(0);
+    }
+
+    @Test
     void all_renvoie_l_identite_pour_le_modele_d_import_portefeuille() {
         POST("/api/v1/admin/clients-fb/import",
                 Map.of("lignes", List.of(ligne())), agent);

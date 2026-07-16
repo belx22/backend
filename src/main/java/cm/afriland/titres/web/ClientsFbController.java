@@ -63,17 +63,18 @@ public class ClientsFbController {
 
         int importees = 0;
         int ignorees = 0;
+        int doublons = 0;
         for (Map<String, Object> ligne : req.lignes()) {
-            if (referentiel.upsert(ligne, user.id())) {
-                importees++;
-            } else {
-                ignorees++;   // numero de compte absent ou mal forme
+            switch (referentiel.upsert(ligne, user.id())) {
+                case IMPORTE -> importees++;
+                case DOUBLON_IDENTITE -> doublons++;
+                case NUMERO_INVALIDE -> ignorees++;
             }
         }
 
         audit.log(user.id().toString(), "IMPORT_BASE_CLIENTS", AuditService.SUCCES,
-                importees + " ligne(s)", clientIp.value());
-        return Map.of("importees", importees, "ignorees", ignorees,
+                importees + " ligne(s), " + doublons + " doublon(s) ecarte(s)", clientIp.value());
+        return Map.of("importees", importees, "ignorees", ignorees, "doublons", doublons,
                 "total", req.lignes().size());
     }
 
