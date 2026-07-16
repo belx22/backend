@@ -116,4 +116,17 @@ public class ClientsFbController {
 
         return pg.build(data, total == null ? 0 : total);
     }
+
+    /**
+     * Référentiel complet, réduit aux champs d'identité — alimente le
+     * <b>modèle d'import de portefeuille</b> pré-rempli côté navigateur (une ligne
+     * par client de la base, colonnes titres à compléter). Borné à {@link #MAX_LIGNES}.
+     */
+    @GetMapping("/all")
+    public List<Map<String, Object>> all(AuthUser user) {
+        user.require(Permission.CLIENT_MANAGE);
+        return jdbc.queryForList(
+                "SELECT nom_prenom, matricule, compte_depot, numero_compte, compte_especes "
+                        + "FROM clients_fb ORDER BY nom_prenom, numero_compte LIMIT " + MAX_LIGNES);
+    }
 }

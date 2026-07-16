@@ -159,6 +159,10 @@ class ClientCreationV10Test {
         ResponseEntity<Map> r = POST("/api/v1/clients", requeteMinimale("PP", uniqueEmail()), tokAgent);
 
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        // Categorie client (segment metier) : defaut PP = « Personnes physiques ».
+        assertThat(r.getBody().get("categorieClient")).isEqualTo("Personnes physiques");
+        // Dirigeant (formule d'adresse des documents) : defaut PP = « Monsieur ».
+        assertThat(r.getBody().get("dirigeant")).isEqualTo("Monsieur");
         Map compte = (Map) r.getBody().get("compte");
         assertThat(compte.get("typeCompte")).isEqualTo("INDIVIDUEL");
         assertThat(compte.get("categorie")).isEqualTo("NON_QUALIFIE");
@@ -240,6 +244,10 @@ class ClientCreationV10Test {
         ResponseEntity<Map> r = POST("/api/v1/clients", req, tokAgent);
 
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        // Categorie client : defaut PM = « Personne morale ».
+        assertThat(r.getBody().get("categorieClient")).isEqualTo("Personne morale");
+        // Dirigeant : defaut PM = « Directeur ».
+        assertThat(r.getBody().get("dirigeant")).isEqualTo("Directeur");
         Map a = (Map) ((List<?>) ((Map) r.getBody().get("compte")).get("adresses")).get(0);
         assertThat(a.get("type")).isEqualTo("SIEGE");   // PM
         assertThat(a.get("rue")).isEqualTo("Avenue Kennedy");

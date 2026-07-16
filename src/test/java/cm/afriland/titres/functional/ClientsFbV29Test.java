@@ -117,8 +117,13 @@ class ClientsFbV29Test {
     }
 
     String login(String email) {
+        return loginAvec(email, "Demo1234");
+    }
+
+    /** Connexion complete (mot de passe + OTP) avec un mot de passe explicite. */
+    String loginAvec(String email, String motDePasse) {
         ResponseEntity<Map> s1 = POST("/api/v1/auth/login",
-                Map.of("email", email, "password", "Demo1234"), null);
+                Map.of("email", email, "password", motDePasse), null);
         ResponseEntity<Map> s2 = POST("/api/v1/auth/mfa/verify",
                 Map.of("challengeId", s1.getBody().get("challengeId"), "code", "123456"), null);
         return (String) s2.getBody().get("accessToken");
@@ -197,6 +202,23 @@ class ClientsFbV29Test {
     }
 
     @Test
+    void all_renvoie_l_identite_pour_le_modele_d_import_portefeuille() {
+        POST("/api/v1/admin/clients-fb/import",
+                Map.of("lignes", List.of(ligne())), agent);
+
+        ResponseEntity<List> r = GET_LIST("/api/v1/admin/clients-fb/all", agent);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        List<Map<String, Object>> lignes = r.getBody();
+        Map<String, Object> row = lignes.stream()
+                .filter(m -> numeroFichier.equals(m.get("numero_compte")))
+                .findFirst().orElseThrow();
+        // Champs d'identite exposes pour pre-remplir le modele.
+        assertThat(row.get("nom_prenom")).isEqualTo("MEKULU M");
+        assertThat(row.get("matricule")).isEqualTo("0686513");
+        assertThat(row.get("compte_depot")).isEqualTo(compteDepot);
+    }
+
+    @Test
     void une_ligne_sans_numero_de_compte_est_ignoree_sans_faire_echouer_l_import() {
         Map<String, Object> vide = new LinkedHashMap<>(ligne());
         vide.put("numeroCompte", "");
@@ -209,8 +231,13 @@ class ClientsFbV29Test {
 
     @Test
     void l_import_est_reserve_au_back_office() {
-        ResponseEntity<Map> insc = inscrire("10005" + "00090" + "99999999999" + "11");
-        String client = (String) ((Map) insc.getBody().get("auth")).get("accessToken");
+        // Le client se connecte normalement (OTP) : meme avec une session complete,
+        // il ne detient pas CLIENT_MANAGE — l'import lui est refuse (403).
+        String email = "fb+" + UUID.randomUUID() + "@example.cm";
+        POST("/api/v1/registration/register", Map.of(
+                "email", email, "password", "MotDePasse1", "nom", "MEKULU", "prenom", "M",
+                "typePersonne", "PP", "compteEspeces", "10005" + "00090" + "99999999999" + "11"), null);
+        String client = loginAvec(email, "MotDePasse1");
         ResponseEntity<Map> r = POST("/api/v1/admin/clients-fb/import",
                 Map.of("lignes", List.of(ligne())), client);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);

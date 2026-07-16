@@ -61,6 +61,22 @@ public class ClientController {
     private static final String CLIENT_INTROUVABLE = "Client introuvable.";
     private static final String QUALIFIE = "QUALIFIE";
     private static final String NON_QUALIFIE = "NON_QUALIFIE";
+
+    /** Catégorie « client » (segment métier) — liste FIGÉE des 12 valeurs réellement
+     *  présentes dans la BASE CLIENTS. Distincte de la catégorie investisseur
+     *  (QUALIFIE/NON_QUALIFIE). Toute autre valeur est refusée (cf. CHECK V31). */
+    private static final List<String> CATEGORIES_CLIENT = List.of(
+            "Personnes physiques", "Personne morale", "Entreprises non financières",
+            "Etablissements de microfinance", "Etablissements financiers",
+            "Société de Gestion", "Société de Bourse", "Investisseurs institutionnels",
+            "Assurance", "Administrations privées", "Administrations publiques", "Compte propre");
+    /** Défauts de catégorie client selon le type de personne. */
+    private static final String CATEGORIE_CLIENT_PP = "Personnes physiques";
+    private static final String CATEGORIE_CLIENT_PM = "Personne morale";
+
+    /** Défauts du « dirigeant » (formule d'adresse portée sur les documents générés). */
+    private static final String DIRIGEANT_PP = "Monsieur";
+    private static final String DIRIGEANT_PM = "Directeur";
     private static final String ACTIF = "ACTIF";
     private static final String SUSPENDU = "SUSPENDU";
     private static final String COL_USER_ID = "user_id";
@@ -75,10 +91,14 @@ public class ClientController {
             + "  NULLIF(trim(coalesce(u.nom,'') || ' ' || coalesce(u.prenom,'')), ''), "
             + "  u.email) AS raison_sociale, "
             + "cp.rccm, "
+            + "cp.categorie_client, cp.matricule, cp.dirigeant, cp.assujetti_taxes, "
+            + "cp.localisation, cp.telephone2, "
             + "COALESCE(cp.compte_statut, u.statut, 'ACTIF') AS compte_statut, "
             + "cp.date_ouverture, cp.created_by, cp.created_at, "
             + "NULLIF(trim(coalesce(cb.nom,'') || ' ' || coalesce(cb.prenom,'')), '') AS created_by_nom, "
-            + "u.compte_titres, u.compte_especes, u.solde, u.categorie, u.type_compte "
+            + "u.compte_titres, u.compte_especes, u.solde, u.categorie, u.type_compte, "
+            + "u.nom AS titulaire_nom, u.prenom AS titulaire_prenom, "
+            + "u.email AS titulaire_email, u.telephone AS titulaire_telephone "
             + "FROM users u "
             + "LEFT JOIN client_profiles cp ON cp.user_id = u.id "
             + "LEFT JOIN users cb ON cb.id = cp.created_by "
@@ -126,8 +146,11 @@ public class ClientController {
                      List<SousCompteDto> sousComptes) {
     }
 
-    record ClientDossier(UUID id, String type, String raisonSociale, String rccm, UUID createdBy,
-                         String createdByNom, OffsetDateTime createdAt, CompteDto compte) {
+    record ClientDossier(UUID id, String type, String raisonSociale, String rccm,
+                         String categorieClient, String matricule, String dirigeant,
+                         Boolean assujettiTaxes, String localisation, String telephone2,
+                         UUID createdBy, String createdByNom, OffsetDateTime createdAt,
+                         CompteDto compte) {
     }
 
     // --- Requete de creation ---
@@ -148,6 +171,8 @@ public class ClientController {
     }
 
     record CreateClientRequest(String type, String raisonSociale, String rccm, String categorie,
+                               String categorieClient, String matricule, String dirigeant,
+                               Boolean assujettiTaxes, String localisation, String telephone2,
                                String typeCompte, ReqAdresse adresse, List<ReqContact> signataires,
                                List<ReqSousCompte> sousComptes, String compteEspecesLie,
                                Long soldeEspecesInitial) {
@@ -244,7 +269,9 @@ public class ClientController {
                 c.dateOuverture(), c.categorie(), c.compteEspecesLie(), 0L,
                 c.adresses(), c.contacts(), c.sousComptes());
         return new ClientDossier(dossier.id(), dossier.type(), dossier.raisonSociale(),
-                dossier.rccm(), dossier.createdBy(), dossier.createdByNom(),
+                dossier.rccm(), dossier.categorieClient(), dossier.matricule(),
+                dossier.dirigeant(), dossier.assujettiTaxes(), dossier.localisation(),
+                dossier.telephone2(), dossier.createdBy(), dossier.createdByNom(),
                 dossier.createdAt(), scrubbed);
     }
 
@@ -267,6 +294,14 @@ public class ClientController {
 
         String role = "PP".equals(typePersonne) ? Rbac.CLIENT_PP : Rbac.CLIENT_PM;
         String categorie = QUALIFIE.equals(req.categorie()) ? QUALIFIE : NON_QUALIFIE;
+        // Catégorie métier (segment) : défaut selon le type de personne.
+        String categorieClient = categorieClientOuDefaut(req.categorieClient(),
+                "PM".equals(typePersonne) ? CATEGORIE_CLIENT_PM : CATEGORIE_CLIENT_PP);
+        // Dirigeant (formule d'adresse des documents) : défaut PP=Monsieur, PM=Directeur.
+        String dirigeant = trimToNull(req.dirigeant());
+        if (dirigeant == null) {
+            dirigeant = "PM".equals(typePersonne) ? DIRIGEANT_PM : DIRIGEANT_PP;
+        }
         String typeCompte = (req.typeCompte() != null && !req.typeCompte().trim().isEmpty())
                 ? req.typeCompte() : "INDIVIDUEL";
 
@@ -330,9 +365,13 @@ public class ClientController {
                 solde, categorie, typeCompte, telephone, cipher.encrypt(motDePasseInitial));
 
         jdbc.update("INSERT INTO client_profiles (user_id, type_personne, raison_sociale, rccm, "
-                        + "compte_statut, created_by) VALUES (?,?,?,?, 'ACTIF', ?)",
+                        + "categorie_client, matricule, dirigeant, assujetti_taxes, localisation, "
+                        + "telephone2, compte_statut, created_by) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?, 'ACTIF', ?)",
                 userId, typePersonne, req.raisonSociale().trim(),
-                trimToNull(req.rccm()), creator.id());
+                trimToNull(req.rccm()), categorieClient, trimToNull(req.matricule()),
+                dirigeant, req.assujettiTaxes(), trimToNull(req.localisation()),
+                trimToNull(req.telephone2()), creator.id());
 
         ReqAdresse a = req.adresse();
         if (a != null && a.rue() != null && !a.rue().trim().isEmpty()) {
@@ -403,7 +442,9 @@ public class ClientController {
                         csEmail, password.hash(csPwd), role, csNom, csPrenom, csTel, userId,
                         cipher.encrypt(csPwd));
                 String csNomComplet = csPrenom != null ? csNom + " " + csPrenom : csNom;
-                credentials.sendInitialPassword(csEmail, csTel, csNomComplet, csPwd, true);
+                // Co-signataire = personne physique rattachée au compte-titres partagé.
+                credentials.sendInitialPassword(csEmail, csTel, csNomComplet, compteTitres, false,
+                        csPwd, true);
             }
         }
 
@@ -411,8 +452,11 @@ public class ClientController {
                 AuditService.SUCCES, email, ip.value());
 
         // Transmission du mot de passe provisoire au client (e-mail + SMS prepare).
+        // Salutation selon le type (PP « Bonjour Mr/Mme » / PM « À l'attention de »)
+        // et numero de compte-titres masque.
         String nomComplet = prenom != null ? nom + " " + prenom : nom;
-        credentials.sendInitialPassword(email, telephone, nomComplet, motDePasseInitial, true);
+        credentials.sendInitialPassword(email, telephone, nomComplet, compteTitres, personneMorale,
+                motDePasseInitial, true);
 
         ClientDossier dossier = loadDossiers(PROFILE_SELECT + AND_USER_ID, userId)
                 .stream()
@@ -424,6 +468,8 @@ public class ClientController {
     // --- Requete de mise a jour (champs partiels : null = inchange) ---
 
     record UpdateClientRequest(String raisonSociale, String rccm, String categorie,
+                               String categorieClient, String matricule, String dirigeant,
+                               Boolean assujettiTaxes, String localisation, String telephone2,
                                String typeCompte, String statut, String telephone,
                                String email, String compteTitres, String compteEspecesLie,
                                ReqAdresse adresse, List<ReqContact> signataires,
@@ -450,6 +496,11 @@ public class ClientController {
         if (categorie != null) {
             ApiException.ensure(QUALIFIE.equals(categorie) || NON_QUALIFIE.equals(categorie),
                     "catégorie invalide (QUALIFIE ou NON_QUALIFIE)");
+        }
+        String categorieClient = trimToNull(req.categorieClient());
+        if (categorieClient != null) {
+            ApiException.ensure(CATEGORIES_CLIENT.contains(categorieClient),
+                    "catégorie client invalide (valeur hors référentiel)");
         }
         String compteStatut = trimToNull(req.statut());
         if (compteStatut != null) {
@@ -517,9 +568,15 @@ public class ClientController {
         // 1) Profil (cree s'il manque, puis maj partielle des champs fournis).
         ensureProfileRow(id);
         jdbc.update("UPDATE client_profiles SET raison_sociale = COALESCE(?, raison_sociale), "
-                        + "rccm = COALESCE(?, rccm), compte_statut = COALESCE(?, compte_statut) "
+                        + "rccm = COALESCE(?, rccm), compte_statut = COALESCE(?, compte_statut), "
+                        + "categorie_client = COALESCE(?, categorie_client), "
+                        + "matricule = COALESCE(?, matricule), dirigeant = COALESCE(?, dirigeant), "
+                        + "assujetti_taxes = COALESCE(?, assujetti_taxes), "
+                        + "localisation = COALESCE(?, localisation), telephone2 = COALESCE(?, telephone2) "
                         + "WHERE user_id = ?",
-                raisonSociale, rccm, compteStatut, id);
+                raisonSociale, rccm, compteStatut, categorieClient, trimToNull(req.matricule()),
+                trimToNull(req.dirigeant()), req.assujettiTaxes(), trimToNull(req.localisation()),
+                trimToNull(req.telephone2()), id);
 
         // 2) Compte utilisateur (categorie, type, telephone, e-mail de connexion,
         //    statut, numeros de compte, nom/prenom affiches).
@@ -679,6 +736,16 @@ public class ClientController {
                 rs.getString("categorie"),
                 rs.getString("compte_especes"),
                 rs.getObject("solde", Long.class),
+                rs.getString("titulaire_nom"),
+                rs.getString("titulaire_prenom"),
+                rs.getString("titulaire_email"),
+                rs.getString("titulaire_telephone"),
+                rs.getString("categorie_client"),
+                rs.getString("matricule"),
+                rs.getString("dirigeant"),
+                rs.getObject("assujetti_taxes", Boolean.class),
+                rs.getString("localisation"),
+                rs.getString("telephone2"),
         }, profileArgs);
 
         if (rows.isEmpty()) {
@@ -734,6 +801,19 @@ public class ClientController {
             String typeCompte = (String) r[8];
             String categorie = (String) r[11];
             Long solde = (Long) r[13];
+
+            // Contact principal : les signataires explicites priment. A defaut,
+            // on expose le TITULAIRE lui-meme (nom/prenom/e-mail/telephone portes
+            // par la fiche client) pour que le dossier et le formulaire d'edition
+            // soient prerenseignes — notamment pour les clients importes qui n'ont
+            // pas de ligne client_contacts dediee.
+            List<ContactDto> contactList = contacts.get(uid);
+            if (contactList == null || contactList.isEmpty()) {
+                ContactDto titulaire = titulaireContact(
+                        (String) r[14], (String) r[15], (String) r[16], (String) r[17]);
+                contactList = titulaire != null ? List.of(titulaire) : List.of();
+            }
+
             CompteDto compte = new CompteDto(
                     uid,
                     r[7] != null ? (String) r[7] : "",
@@ -744,17 +824,50 @@ public class ClientController {
                     r[12] != null ? (String) r[12] : "",
                     solde != null ? solde : 0L,
                     adresses.getOrDefault(uid, List.of()),
-                    contacts.getOrDefault(uid, List.of()),
+                    contactList,
                     sousComptes.getOrDefault(uid, List.of()));
             result.add(new ClientDossier(uid, (String) r[1], (String) r[2], (String) r[3],
+                    (String) r[18], (String) r[19], (String) r[20], (Boolean) r[21],
+                    (String) r[22], (String) r[23],
                     (UUID) r[4], (String) r[5], (OffsetDateTime) r[6], compte));
         }
         return result;
+    }
+
+    /**
+     * Contact principal synthetise a partir de l'identite du titulaire (fiche
+     * client). Renvoie {@code null} si aucune information exploitable, afin de
+     * ne pas afficher un contact vide. L'{@code id} est {@code null} : ce
+     * contact n'est pas une ligne {@code client_contacts} persistee.
+     */
+    private static ContactDto titulaireContact(String nom, String prenom, String email,
+                                               String telephone) {
+        String n = trimToNull(nom);
+        String p = trimToNull(prenom);
+        String e = trimToNull(email);
+        String t = trimToNull(telephone);
+        if (n == null && p == null && e == null && t == null) {
+            return null;
+        }
+        return new ContactDto(null, "TITULAIRE", n, p, null, null, t, null, null, e,
+                null, null, null, null, null);
     }
 
     private static String trimToNull(String s) {
         if (s == null) return null;
         String t = s.trim();
         return t.isEmpty() ? null : t;
+    }
+
+    /**
+     * Normalise la catégorie client (segment métier). Vide/null → {@code parDefaut} ;
+     * une valeur hors des 12 catégories référencées est rejetée en 400.
+     */
+    private static String categorieClientOuDefaut(String fournie, String parDefaut) {
+        String c = trimToNull(fournie);
+        if (c == null) return parDefaut;
+        ApiException.ensure(CATEGORIES_CLIENT.contains(c),
+                "catégorie client invalide (valeur hors référentiel)");
+        return c;
     }
 }

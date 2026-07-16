@@ -4,6 +4,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -37,15 +38,30 @@ public class AdminRegistrationController {
 
     private static final String EN_ATTENTE_VERIFICATION = "EN_ATTENTE_VERIFICATION";
 
+    /** Catégories client valides (garde-fou avant l'INSERT : la colonne a un CHECK). */
+    private static final Set<String> CATEGORIES_CLIENT = Set.of(
+            "Personnes physiques", "Personne morale", "Entreprises non financières",
+            "Etablissements de microfinance", "Etablissements financiers",
+            "Société de Gestion", "Société de Bourse", "Investisseurs institutionnels",
+            "Assurance", "Administrations privées", "Administrations publiques", "Compte propre");
+
+    /** Attributs repris de la BASE CLIENTS (clients_fb) vers le profil plateforme. */
+    private record BaseClientFields(String categorieClient, String matricule, String dirigeant,
+                                    Boolean assujettiTaxes, String localisation, String telephone2) {
+    }
+
     private final JdbcTemplate jdbc;
     private final FileStorageService storage;
     private final AuditService audit;
+    private final cm.afriland.titres.notif.CredentialDelivery credentials;
 
     public AdminRegistrationController(JdbcTemplate jdbc, FileStorageService storage,
-                                       AuditService audit) {
+                                       AuditService audit,
+                                       cm.afriland.titres.notif.CredentialDelivery credentials) {
         this.jdbc = jdbc;
         this.storage = storage;
         this.audit = audit;
+        this.credentials = credentials;
     }
 
     record VerifyRequest(
@@ -166,17 +182,26 @@ public class AdminRegistrationController {
                 "SELECT verification_status, liveness_score FROM face_captures "
                         + "WHERE dossier_id = ? ORDER BY created_at DESC LIMIT 1", id);
 
-        return Map.of(
-                "dossierId", id,
-                "statut", d.get("statut"),
-                "typePersonne", d.get("type_personne"),
-                "compteEspeces", d.get("compte_especes"),
-                "email", d.get("email"),
-                "nom", String.valueOf(d.get("nom")),
-                "prenom", d.get("prenom") == null ? "" : d.get("prenom"),
-                "telephone", d.get("telephone") == null ? "" : d.get("telephone"),
-                "pieces", pieces,
-                "visage", visage.isEmpty() ? Map.of() : visage.get(0));
+        // Compte-titres deja connu du referentiel « base clients » (clients_fb.compte_depot) :
+        // permet de pre-remplir le champ d'attribution quand le prospect est deja client.
+        UUID clientFbId = (UUID) d.get("client_fb_id");
+        String compteTitresBase = clientFbId == null ? null : jdbc.query(
+                "SELECT compte_depot FROM clients_fb WHERE id = ?",
+                rs -> rs.next() ? rs.getString("compte_depot") : null, clientFbId);
+
+        Map<String, Object> reponse = new LinkedHashMap<>();
+        reponse.put("dossierId", id);
+        reponse.put("statut", d.get("statut"));
+        reponse.put("typePersonne", d.get("type_personne"));
+        reponse.put("compteEspeces", d.get("compte_especes"));
+        reponse.put("email", d.get("email"));
+        reponse.put("nom", String.valueOf(d.get("nom")));
+        reponse.put("prenom", d.get("prenom") == null ? "" : d.get("prenom"));
+        reponse.put("telephone", d.get("telephone") == null ? "" : d.get("telephone"));
+        reponse.put("compteTitresBase", compteTitresBase == null ? "" : compteTitresBase);
+        reponse.put("pieces", pieces);
+        reponse.put("visage", visage.isEmpty() ? Map.of() : visage.get(0));
+        return reponse;
     }
 
     /**
@@ -210,6 +235,12 @@ public class AdminRegistrationController {
         String typePersonne = (String) d.get("type_personne");
         boolean pm = "PM".equals(typePersonne);
 
+        // Reprise des attributs de la BASE CLIENTS quand le compte est connu du
+        // referentiel : le profil plateforme reflete alors la fiche banque
+        // (categorie metier, matricule, dirigeant, assujettissement, localisation).
+        UUID clientFbId = (UUID) d.get("client_fb_id");
+        BaseClientFields base = clientFbId != null ? chargerBaseClient(clientFbId) : null;
+
         if (compteTitres != null && estDejaAttribue(compteTitres, userId)) {
             throw ApiException.conflict("Ce compte-titres est deja attribue a un autre client.");
         }
@@ -228,15 +259,31 @@ public class AdminRegistrationController {
             raisonSociale = raisonSociale + " " + d.get("prenom");
         }
         jdbc.update("INSERT INTO client_profiles (user_id, type_personne, raison_sociale, "
-                        + "compte_statut, created_by) VALUES (?,?,?, 'ACTIF', ?) "
+                        + "categorie_client, matricule, dirigeant, assujetti_taxes, localisation, "
+                        + "telephone2, compte_statut, created_by) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?, 'ACTIF', ?) "
                         + "ON CONFLICT (user_id) DO NOTHING",
-                userId, typePersonne, raisonSociale, user.id());
+                userId, typePersonne, raisonSociale,
+                base != null ? base.categorieClient() : null,
+                base != null ? base.matricule() : null,
+                base != null ? base.dirigeant() : null,
+                base != null ? base.assujettiTaxes() : null,
+                base != null ? base.localisation() : null,
+                base != null ? base.telephone2() : null,
+                user.id());
 
         jdbc.update("UPDATE registration_dossiers SET statut = 'VALIDE', validated_by = ?, "
                 + "validated_at = now(), updated_at = now() WHERE id = ?", user.id(), id);
 
         audit.log(user.id().toString(), "DOSSIER_VALIDE", AuditService.SUCCES,
                 id.toString(), clientIp.value());
+
+        // Confirmation d'ouverture du compte-titres envoyee au client (salutation
+        // PP/PM + numero de compte masque). Non bloquant, avec reprise (cf. OTP).
+        String compteTitresEffectif = jdbc.queryForObject(
+                "SELECT compte_titres FROM users WHERE id = ?", String.class, userId);
+        credentials.sendAccountOpened((String) d.get("email"), raisonSociale,
+                compteTitresEffectif, pm);
 
         Map<String, Object> reponse = new LinkedHashMap<>();
         reponse.put("dossierId", id);
@@ -281,7 +328,7 @@ public class AdminRegistrationController {
     private Map<String, Object> chargerDossier(UUID id) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT d.id, d.user_id, d.type_personne, d.compte_especes, d.type_compte, d.statut, "
-                        + "u.email, u.telephone, t.nom, t.prenom "
+                        + "d.client_fb_id, u.email, u.telephone, t.nom, t.prenom "
                         + "FROM registration_dossiers d "
                         + "JOIN users u ON u.id = d.user_id "
                         + "JOIN dossier_titulaires t ON t.dossier_id = d.id "
@@ -291,6 +338,28 @@ public class AdminRegistrationController {
             throw ApiException.notFound("Dossier introuvable.");
         }
         return rows.get(0);
+    }
+
+    /**
+     * Charge les attributs repris de la BASE CLIENTS pour un compte connu.
+     * La catégorie hors des 12 valeurs référencées est neutralisée (NULL) pour
+     * ne pas heurter le CHECK de {@code client_profiles.categorie_client}.
+     */
+    private BaseClientFields chargerBaseClient(UUID clientFbId) {
+        List<Map<String, Object>> r = jdbc.queryForList(
+                "SELECT categorie, matricule, dirigeant, assujetti_taxes, localisation, telephone2 "
+                        + "FROM clients_fb WHERE id = ?", clientFbId);
+        if (r.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> m = r.get(0);
+        String cat = (String) m.get("categorie");
+        if (cat != null && !CATEGORIES_CLIENT.contains(cat)) {
+            cat = null;
+        }
+        return new BaseClientFields(cat, (String) m.get("matricule"), (String) m.get("dirigeant"),
+                (Boolean) m.get("assujetti_taxes"), (String) m.get("localisation"),
+                (String) m.get("telephone2"));
     }
 
     /** Seul un dossier soumis se valide : ni un brouillon, ni un dossier deja tranche. */
