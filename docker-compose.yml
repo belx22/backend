@@ -43,6 +43,10 @@ services:
       APP_ACCESS_TOKEN_TTL: "300"
       APP_REFRESH_TOKEN_TTL: "2592000"
       APP_FRONTEND_ORIGIN: "${APP_FRONTEND_ORIGIN:-http://62.169.26.178:33843,http://localhost:4200}"
+      # Cookie de rafraichissement marque Secure : a activer (true) UNIQUEMENT
+      # derriere un reverse proxy TLS (nginx + Let's Encrypt). Sinon le cookie
+      # HttpOnly ne serait jamais transmis par le navigateur en HTTP.
+      FORCE_HTTPS: "${FORCE_HTTPS:-false}"
       # Mode d'authentification : LOCAL (base) | LDAP (Active Directory strict) |
       # LDAP_THEN_LOCAL (annuaire puis repli base). L'annuaire se configure dans
       # l'espace d'administration > LDAP / Active Directory.
@@ -82,6 +86,11 @@ services:
     # acces local sur l'hote (test_api.py / curl) sans ouverture sur Internet.
     ports:
       - "127.0.0.1:8080:8080"
+    # Persistance des televersements (captures faciales, pieces d'identite) au
+    # dela du cycle de vie du conteneur. Le point de montage /app/data est cree
+    # et attribue a appuser dans l'image : le volume vide en herite au 1er montage.
+    volumes:
+      - appdata:/app/data
     restart: unless-stopped
 
   frontend:
@@ -103,3 +112,4 @@ services:
 
 volumes:
   pgdata:
+  appdata:

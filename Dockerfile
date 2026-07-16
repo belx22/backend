@@ -22,6 +22,12 @@ WORKDIR /app
 
 COPY --from=build /app/target/afb-titres-backend.jar app.jar
 
+# Dossier des televersements (captures faciales, pieces d'identite) : cree et
+# attribue a appuser AVANT de rabaisser les privileges, sinon l'ecriture dans
+# /app/data echoue en AccessDenied (l'utilisateur non-root ne peut pas creer de
+# sous-dossier dans /app possede par root). APP_UPLOAD_DIR pointe ici par defaut.
+RUN mkdir -p /app/data/uploads && chown -R 10001:10001 /app/data
+
 USER appuser
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=3s --start-period=60s --retries=8 \
