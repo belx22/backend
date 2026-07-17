@@ -69,8 +69,6 @@ class ClientsFbV29Test {
 
     /** Numero du fichier : agence(5) + compte(11) + cle(2). Unique par execution. */
     String numeroFichier;
-    /** RIB saisi par le prospect : code banque 10005 + numero du fichier. */
-    String rib;
     String compteDepot;
 
     @BeforeAll
@@ -79,7 +77,6 @@ class ClientsFbV29Test {
         agent = login("agent@afriland.cm");
 
         numeroFichier = numeroFichier();
-        rib = "10005" + numeroFichier;
         compteDepot = depot(numeroFichier);
     }
 
@@ -160,6 +157,21 @@ class ClientsFbV29Test {
         return m;
     }
 
+    /**
+     * Une ligne a l'identite UNIQUE (nom + telephone distincts) : le rejet par
+     * identite (nom+categorie+telephone) ne doit alors pas la confondre avec une
+     * autre ligne deja en base. Utilisee par les cas qui exigent un import reussi
+     * (sans quoi ils dependraient de l'ordre d'execution des tests, qui partagent
+     * tous la meme base non purgee).
+     */
+    Map<String, Object> ligneIdentiteDistincte(String numero, String depot) {
+        Map<String, Object> m = new LinkedHashMap<>(ligne(numero, depot));
+        String uniq = UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        m.put("nomPrenom", "CLIENT " + uniq);
+        m.put("telephone1", "699" + String.format("%06d", Math.abs(uniq.hashCode()) % 1_000_000));
+        return m;
+    }
+
     /** Lignes d'une page du referentiel (la reponse est paginee : {data, page, size, total}). */
     List<Map<String, Object>> pageDe(String queryString) {
         ResponseEntity<Map> r = GET("/api/v1/admin/clients-fb" + queryString, agent);
@@ -183,21 +195,26 @@ class ClientsFbV29Test {
 
     @Test
     void import_puis_reimport_est_idempotent() {
+        // Compte + identite propres : re-jouer LE MEME client (meme numero) ne doit
+        // pas dupliquer, sans dependre de ce que d'autres tests ont importe.
+        String numero = numeroFichier();
+        Map<String, Object> ln = ligneIdentiteDistincte(numero, depot(numero));
+
         ResponseEntity<Map> premier = POST("/api/v1/admin/clients-fb/import",
-                Map.of("lignes", List.of(ligne())), agent);
+                Map.of("lignes", List.of(ln)), agent);
         assertThat(premier.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(premier.getBody().get("importees")).isEqualTo(1);
 
         // Re-jouer le meme fichier rafraichit la ligne au lieu de la dupliquer.
         ResponseEntity<Map> second = POST("/api/v1/admin/clients-fb/import",
-                Map.of("lignes", List.of(ligne())), agent);
+                Map.of("lignes", List.of(ln)), agent);
         assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
 
-        List<Map<String, Object>> trouve = pageDe("?q=" + numeroFichier);
+        List<Map<String, Object>> trouve = pageDe("?q=" + numero);
         assertThat(trouve).hasSize(1);
         Map<String, Object> row = trouve.get(0);
         // Le compte especes est calcule en base : code banque + numero du fichier.
-        assertThat(row.get("compte_especes")).isEqualTo(rib);
+        assertThat(row.get("compte_especes")).isEqualTo("10005" + numero);
         assertThat(row.get("assujetti_taxes")).isEqualTo(true);
     }
 
@@ -240,19 +257,21 @@ class ClientsFbV29Test {
 
     @Test
     void all_renvoie_l_identite_pour_le_modele_d_import_portefeuille() {
-        POST("/api/v1/admin/clients-fb/import",
-                Map.of("lignes", List.of(ligne())), agent);
+        String numero = numeroFichier();
+        Map<String, Object> ln = ligneIdentiteDistincte(numero, depot(numero));
+        String nom = (String) ln.get("nomPrenom");
+        POST("/api/v1/admin/clients-fb/import", Map.of("lignes", List.of(ln)), agent);
 
         ResponseEntity<List> r = GET_LIST("/api/v1/admin/clients-fb/all", agent);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
         List<Map<String, Object>> lignes = r.getBody();
         Map<String, Object> row = lignes.stream()
-                .filter(m -> numeroFichier.equals(m.get("numero_compte")))
+                .filter(m -> numero.equals(m.get("numero_compte")))
                 .findFirst().orElseThrow();
         // Champs d'identite exposes pour pre-remplir le modele.
-        assertThat(row.get("nom_prenom")).isEqualTo("MEKULU M");
+        assertThat(row.get("nom_prenom")).isEqualTo(nom);
         assertThat(row.get("matricule")).isEqualTo("0686513");
-        assertThat(row.get("compte_depot")).isEqualTo(compteDepot);
+        assertThat(row.get("compte_depot")).isEqualTo(depot(numero));
     }
 
     @Test
@@ -288,7 +307,7 @@ class ClientsFbV29Test {
     void un_compte_connu_rattache_le_client_et_son_compte_de_depot() {
         String numero = numeroFichier();
         POST("/api/v1/admin/clients-fb/import",
-                Map.of("lignes", List.of(ligne(numero, depot(numero)))), agent);
+                Map.of("lignes", List.of(ligneIdentiteDistincte(numero, depot(numero)))), agent);
 
         ResponseEntity<Map> insc = inscrire("10005" + numero);
         assertThat(insc.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -305,7 +324,7 @@ class ClientsFbV29Test {
     void une_seconde_inscription_sur_le_meme_compte_n_echoue_pas() {
         String numero = numeroFichier();
         POST("/api/v1/admin/clients-fb/import",
-                Map.of("lignes", List.of(ligne(numero, depot(numero)))), agent);
+                Map.of("lignes", List.of(ligneIdentiteDistincte(numero, depot(numero)))), agent);
 
         assertThat(inscrire("10005" + numero).getStatusCode()).isEqualTo(HttpStatus.OK);
 
