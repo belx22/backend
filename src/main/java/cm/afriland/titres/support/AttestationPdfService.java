@@ -39,7 +39,11 @@ public class AttestationPdfService {
 
     private static final DateTimeFormatter JOUR = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
-    /** Positions du porteur, derivees des ordres adjuges (memes regles que le portefeuille). */
+    /**
+     * Positions du porteur, derivees des ordres adjuges (memes regles que le
+     * portefeuille). Le {@code %s} accueille un filtre optionnel par titre (ISIN)
+     * pour editer une attestation portant sur un seul titre.
+     */
     private static final String POSITIONS_SQL = """
             SELECT e.code AS emission_code, o.isin, e.nature, e.pays_code, e.date_echeance,
                    sum(coalesce(o.volume_alloue, 0))::bigint       AS volume,
@@ -49,6 +53,7 @@ public class AttestationPdfService {
               JOIN emissions e ON e.id = o.emission_id
              WHERE o.client_id = ?
                AND o.status IN ('TOTALEMENT_RETENU', 'PARTIELLEMENT_RETENU')
+               %s
              GROUP BY e.id, o.isin, e.code, e.nature, e.pays_code, e.date_echeance,
                       e.valeur_nominale_unitaire
             HAVING sum(coalesce(o.volume_alloue, 0)) > 0
@@ -79,6 +84,17 @@ public class AttestationPdfService {
      *                      attestation de propriete sans titre n'a pas d'objet.
      */
     public Attestation generer(UUID clientId) {
+        return generer(clientId, null);
+    }
+
+    /**
+     * Edite l'attestation du porteur {@code clientId}. Si {@code isin} est fourni,
+     * l'attestation ne porte que sur ce titre (edition back-office « pour un titre
+     * possede ») ; sinon elle couvre toutes ses positions.
+     *
+     * @throws ApiException si le porteur ne detient aucune position concernee.
+     */
+    public Attestation generer(UUID clientId, String isin) {
         Titulaire titulaire = jdbc.query(
                         "SELECT nom, prenom, compte_titres FROM users WHERE id = ?",
                         (rs, n) -> {
@@ -92,7 +108,11 @@ public class AttestationPdfService {
                 .stream().findFirst()
                 .orElseThrow(() -> ApiException.notFound("Titulaire introuvable."));
 
-        List<Ligne> lignes = jdbc.query(POSITIONS_SQL, (rs, n) -> new Ligne(
+        boolean unTitre = isin != null && !isin.isBlank();
+        String sql = String.format(POSITIONS_SQL, unTitre ? "AND o.isin = ?" : "");
+        Object[] args = unTitre ? new Object[] { clientId, isin } : new Object[] { clientId };
+
+        List<Ligne> lignes = jdbc.query(sql, (rs, n) -> new Ligne(
                 rs.getString("emission_code"),
                 rs.getString("isin"),
                 rs.getString("nature"),
@@ -100,10 +120,11 @@ public class AttestationPdfService {
                 rs.getObject("date_echeance", LocalDate.class),
                 rs.getLong("volume"),
                 rs.getLong("valeur_nominale"),
-                rs.getLong("valeur_totale")), clientId);
+                rs.getLong("valeur_totale")), args);
 
-        ApiException.ensure(!lignes.isEmpty(),
-                "Aucune position en portefeuille : l'attestation de propriété est sans objet.");
+        ApiException.ensure(!lignes.isEmpty(), unTitre
+                ? "Le client ne détient pas ce titre : attestation sans objet."
+                : "Aucune position en portefeuille : l'attestation de propriété est sans objet.");
 
         byte[] pdf = rendre(titulaire, lignes);
         String dataUri = "data:application/pdf;base64,"

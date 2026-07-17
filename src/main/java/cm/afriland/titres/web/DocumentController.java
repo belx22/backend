@@ -30,6 +30,7 @@ import cm.afriland.titres.support.PageResponse;
 import cm.afriland.titres.support.Pagination;
 import cm.afriland.titres.support.SituationPortefeuillePdfService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
@@ -234,6 +235,51 @@ public class DocumentController {
 
         audit.log(user.id().toString(), "GENERATION_LIVRABLE", AuditService.SUCCES,
                 "ATTESTATION_PROPRIETE", ip.value());
+
+        DocumentResponse row = jdbc.query(META + WHERE_DOC_ID, mapper(null), newId)
+                .stream().findFirst()
+                .orElseThrow(() -> ApiException.notFound(DOC_INTROUVABLE));
+        return ResponseEntity.status(HttpStatus.CREATED).body(row);
+    }
+
+    record AttestationClientRequest(
+            @NotNull UUID clientId,
+            /** ISIN du titre pour lequel editer l'attestation (12 caracteres). */
+            @NotBlank @Size(max = 12) String isin) {
+    }
+
+    /**
+     * {@code POST /documents/attestation-propriete/client} — l'agent back-office
+     * edite l'attestation de propriete d'un client <b>pour un titre precis</b>
+     * qu'il possede, et la lui transmet.
+     *
+     * <p>Le PDF est genere par le serveur a partir des positions en base filtrees
+     * sur l'ISIN, puis persiste comme livrable. Permission {@code DOCUMENT_UPLOAD}.
+     * Si le client ne detient pas ce titre, la generation echoue (400).</p>
+     */
+    @PostMapping("/attestation-propriete/client")
+    public ResponseEntity<DocumentResponse> attestationPourClient(AuthUser user, ClientIp ip,
+                                                                  @Valid @RequestBody AttestationClientRequest req) {
+        user.require(Permission.DOCUMENT_UPLOAD);
+
+        String destRole = jdbc.query("SELECT role FROM users WHERE id = ?",
+                        (rs, n) -> rs.getString("role"), req.clientId())
+                .stream().findFirst().orElse(null);
+        if (destRole == null) {
+            throw ApiException.notFound("Client destinataire introuvable.");
+        }
+        if (!"CLIENT_PP".equals(destRole) && !"CLIENT_PM".equals(destRole)) {
+            throw ApiException.badRequest("Le destinataire doit être un client.");
+        }
+
+        AttestationPdfService.Attestation att = attestations.generer(req.clientId(), req.isin().trim());
+
+        UUID newId = insertDocument(
+                "ATTESTATION_PROPRIETE", "Attestation de propriété — " + req.isin().trim(),
+                req.clientId(), user.id(), "application/pdf", att.taille(), att.dataUri());
+
+        audit.log(user.id().toString(), "GENERATION_LIVRABLE", AuditService.SUCCES,
+                "ATTESTATION_PROPRIETE " + req.isin().trim(), ip.value());
 
         DocumentResponse row = jdbc.query(META + WHERE_DOC_ID, mapper(null), newId)
                 .stream().findFirst()

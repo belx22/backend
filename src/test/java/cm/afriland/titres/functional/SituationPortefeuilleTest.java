@@ -2,6 +2,7 @@ package cm.afriland.titres.functional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -178,5 +179,83 @@ class SituationPortefeuilleTest {
                 Map.of("periode", "2026-06-16"), tokAgent);
 
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    // ═══════════ Attestation de propriété pour un titre détenu ═════════════════
+
+    private static String isinUnique() {
+        return ("CM" + UUID.randomUUID().toString().replace("-", "")).substring(0, 12).toUpperCase();
+    }
+
+    /** Une émission existante (le seed en publie deux) : id + ISIN. */
+    Map<String, String> uneEmission() {
+        ResponseEntity<Map> ems = GET("/api/v1/emissions?size=1", tokAgent);
+        assertThat(ems.getStatusCode()).isEqualTo(HttpStatus.OK);
+        List<Map<String, Object>> data = (List<Map<String, Object>>) ems.getBody().get("data");
+        assertThat(data).isNotEmpty();
+        Map<String, String> out = new LinkedHashMap<>();
+        out.put("id", (String) data.get(0).get("id"));
+        out.put("isin", (String) data.get(0).get("isin"));
+        return out;
+    }
+
+    /** Donne au client une position sur ce titre via l'import de portefeuille. */
+    void importerPosition(String emId, String isin) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("emissionId", emId);
+        row.put("isin", isin);
+        row.put("clientId", clientId);
+        row.put("volume", 5);
+        row.put("montantAdjuge", 50_000_000L);
+        row.put("tauxNominal", 6.0);
+        ResponseEntity<Map> r = POST("/api/v1/portfolio/import",
+                Map.of("rows", List.of(row)), tokAgent);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("imported")).isEqualTo(1);
+    }
+
+    /** L'agent édite l'attestation d'un titre effectivement détenu par le client. */
+    @Test
+    void l_agent_edite_l_attestation_pour_un_titre_detenu() {
+        Map<String, String> em = uneEmission();
+        String isin = em.get("isin");
+        importerPosition(em.get("id"), isin);
+
+        ResponseEntity<Map> r = POST("/api/v1/documents/attestation-propriete/client",
+                Map.of("clientId", clientId, "isin", isin), tokAgent);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(r.getBody().get("type")).isEqualTo("ATTESTATION_PROPRIETE");
+        assertThat(r.getBody().get("mimeType")).isEqualTo("application/pdf");
+        assertThat(String.valueOf(r.getBody().get("titre"))).contains(isin);
+        assertThat(r.getBody().get("clientId")).isEqualTo(clientId);
+
+        String docId = (String) r.getBody().get("id");
+        ResponseEntity<Map> detail = GET("/api/v1/documents/" + docId, tokAgent);
+        assertThat(String.valueOf(detail.getBody().get("contenu"))).startsWith("data:application/pdf");
+    }
+
+    /** Un titre que le client ne détient pas : attestation sans objet (400). */
+    @Test
+    void l_attestation_d_un_titre_non_detenu_est_refusee() {
+        ResponseEntity<Map> r = POST("/api/v1/documents/attestation-propriete/client",
+                Map.of("clientId", clientId, "isin", isinUnique()), tokAgent);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    /** L'ISIN du titre est obligatoire. */
+    @Test
+    void l_attestation_exige_l_isin() {
+        ResponseEntity<Map> r = POST("/api/v1/documents/attestation-propriete/client",
+                Map.of("clientId", clientId), tokAgent);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    /** Un client ne peut pas éditer d'attestation (réservé au back-office). */
+    @Test
+    void l_attestation_est_reservee_au_back_office() {
+        ResponseEntity<Map> r = POST("/api/v1/documents/attestation-propriete/client",
+                Map.of("clientId", clientId, "isin", isinUnique()), tokClient);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
 }
