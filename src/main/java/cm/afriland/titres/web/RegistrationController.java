@@ -27,6 +27,7 @@ import cm.afriland.titres.security.AuthUser;
 import cm.afriland.titres.security.ClientIp;
 import cm.afriland.titres.security.PasswordService;
 import cm.afriland.titres.security.RateLimiter;
+import cm.afriland.titres.security.Rbac;
 import cm.afriland.titres.support.ClientsFbRepository;
 import cm.afriland.titres.support.FaceMatcher;
 import cm.afriland.titres.support.FileStorageService;
@@ -97,6 +98,12 @@ public class RegistrationController {
             String prenom,
             String telephone,
             @Pattern(regexp = "PP|PM", message = "type de personne invalide (PP|PM)") String typePersonne,
+            // Un compte JOINT soumet chaque ordre a la cosignature (signature +
+            // visage) des autres titulaires, rattaches par le back-office lors de
+            // la validation du dossier. Les autres valeurs de l'Annexe 1
+            // (INDIVISION, DEMEMBRE) restent saisies par le back-office.
+            @Pattern(regexp = "INDIVIDUEL|JOINT", message = "type de compte invalide (INDIVIDUEL|JOINT)")
+            String typeCompte,
             // Compte especes = 23 chiffres (RIB) : code banque 10005 + le numero tel
             // qu'il figure dans la base clients — agence 5 + compte 11 + cle 2.
             // Ex. « 00090 56010090000 48 » -> « 10005 00090 56010090000 48 ».
@@ -169,15 +176,21 @@ public class RegistrationController {
                 "INSERT INTO users (email, password_hash, role, nom, prenom, telephone, "
                         + "compte_especes, compte_titres, solde, categorie, must_change_password) "
                         + "VALUES (?,?,?,?,?,?,?,?, 0, 'NON_QUALIFIE', FALSE) RETURNING id",
-                UUID.class, email, hash, ROLE_CLIENT_PP,
+                UUID.class, email, hash,
+                // Le role suit la qualite declaree des l'inscription. La validation
+                // du dossier le reaffirme (AdminRegistrationController) : le poser
+                // ici evite qu'une personne morale vive en CLIENT_PP entre-temps.
+                "PM".equals(typePersonne) ? Rbac.CLIENT_PM : ROLE_CLIENT_PP,
                 req.nom().trim(), trimOrNull(req.prenom()), telephone,
                 compteEspeces, compteDepot);
 
+        String typeCompte = req.typeCompte() == null ? "INDIVIDUEL" : req.typeCompte();
+
         UUID dossierId = jdbc.queryForObject(
-                "INSERT INTO registration_dossiers (user_id, type_personne, compte_especes, statut, "
-                        + "client_fb_id, client_connu) VALUES (?,?,?, '" + STATUT_BROUILLON + "', ?,?) "
-                        + "RETURNING id",
-                UUID.class, userId, typePersonne, compteEspeces,
+                "INSERT INTO registration_dossiers (user_id, type_personne, type_compte, "
+                        + "compte_especes, statut, client_fb_id, client_connu) "
+                        + "VALUES (?,?,?,?, '" + STATUT_BROUILLON + "', ?,?) RETURNING id",
+                UUID.class, userId, typePersonne, typeCompte, compteEspeces,
                 connu.map(ClientsFbRepository.ClientFb::id).orElse(null), connu.isPresent());
 
         // Titulaire principal pre-rempli depuis le compte (co-titulaires ajoutes plus tard).

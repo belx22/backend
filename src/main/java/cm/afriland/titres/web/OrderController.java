@@ -31,11 +31,14 @@ import cm.afriland.titres.security.AuthUser;
 import cm.afriland.titres.security.ClientIp;
 import cm.afriland.titres.security.Permission;
 import cm.afriland.titres.support.Countries;
+import cm.afriland.titres.support.FaceMatcher;
+import cm.afriland.titres.support.OrderFaceCheckService;
 import cm.afriland.titres.support.PageResponse;
 import cm.afriland.titres.support.Pagination;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
@@ -57,6 +60,7 @@ public class OrderController {
     private static final String ANNULE = "ANNULE";
 
     private static final String PREFIXE_AVIS_ORDRE = "Votre ordre ";
+    private static final String PREFIXE_ORDRE = "L'ordre ";
     private static final String COL_STATUS = "status";
     private static final String AND_CLIENT_ID = " AND o.client_id = ?";
 
@@ -97,14 +101,16 @@ public class OrderController {
     private final NotificationService notifications;
     private final EmailService email;
     private final AppProperties props;
+    private final OrderFaceCheckService faces;
 
     public OrderController(JdbcTemplate jdbc, AuditService audit, NotificationService notifications,
-                           EmailService email, AppProperties props) {
+                           EmailService email, AppProperties props, OrderFaceCheckService faces) {
         this.jdbc = jdbc;
         this.audit = audit;
         this.notifications = notifications;
         this.email = email;
         this.props = props;
+        this.faces = faces;
     }
 
     /** Identifiant du COMPTE (titulaire principal) : pour un co-signataire, on
@@ -188,7 +194,26 @@ public class OrderController {
     private record EmissionForOrder(String status, long vnu, long montantMin, String isin) {
     }
 
-    record CoSignRequest(@NotNull Boolean approve) {
+    /**
+     * Validation d'un co-signataire de compte joint.
+     *
+     * <p>Approuver engage : on exige la meme preuve qu'a l'inscription — la
+     * signature manuscrite ET la photo du visage (avec son empreinte, comparee
+     * cote serveur). Refuser n'exige rien : on ne demande pas a quelqu'un de
+     * prouver son identite pour dire non, et l'exiger reviendrait a retenir un
+     * refus faute de camera.</p>
+     */
+    record CoSignRequest(
+            @NotNull Boolean approve,
+            String signatureData,
+            String imageBase64,
+            Double livenessScore,
+            @Pattern(regexp = "BLINK|TURN_HEAD|SMILE") String challengeType,
+            List<Double> descriptor) {
+    }
+
+    record ForceValidateRequest(
+            @Size(min = 3, max = 500, message = "motif obligatoire (3 a 500 caracteres)") String motif) {
     }
 
     record UpdateOrderRequest(
@@ -360,8 +385,24 @@ public class OrderController {
 
         UUID account = order.clientId();
         if (req.approve()) {
-            jdbc.update("UPDATE order_signatures SET status='SIGNED', decided_at=now() "
-                    + "WHERE order_id = ? AND signatory_id = ?", id, user.id());
+            // Valider engage : meme preuve qu'a l'inscription — signature + visage.
+            ApiException.ensure(req.signatureData() != null && !req.signatureData().isBlank(),
+                    "Votre signature est requise pour valider cette opération.");
+            ApiException.ensure(req.imageBase64() != null && !req.imageBase64().isBlank(),
+                    "Une photo de votre visage est requise pour valider cette opération.");
+
+            // Le controle facial informe le back-office, il ne bloque pas : un
+            // visage juge different n'annule pas la validation du signataire.
+            FaceMatcher.Resultat face = faces.enregistrer(id, user.id(),
+                    new OrderFaceCheckService.Capture(req.imageBase64(), req.livenessScore(),
+                            req.challengeType(), req.descriptor()));
+            audit.log(user.id().toString(), "CONTROLE_FACIAL_COSIGNATURE",
+                    face.matched() ? AuditService.SUCCES : AuditService.ECHEC,
+                    order.reference(), ip.value());
+
+            jdbc.update("UPDATE order_signatures SET status='SIGNED', decided_at=now(), "
+                    + "signature_data=? WHERE order_id = ? AND signatory_id = ?",
+                    req.signatureData(), id, user.id());
             Long restantes = jdbc.queryForObject(
                     "SELECT count(*) FROM order_signatures WHERE order_id = ? AND status = 'PENDING'",
                     Long.class, id);
@@ -372,7 +413,7 @@ public class OrderController {
                 jdbc.update("UPDATE orders SET status='SOUMIS', updated_at=now() "
                         + "WHERE id = ? AND status = 'EN_ATTENTE_SIGNATURES'", id);
                 notifyAccount(account, "SUCCESS", "Opération validée et transmise",
-                        "L'ordre " + order.reference() + " a été validé par tous les signataires et "
+                        PREFIXE_ORDRE + order.reference() + " a été validé par tous les signataires et "
                                 + "est désormais en cours de traitement.", order.reference());
             } else {
                 notifyAccount(account, "INFO", "Validation enregistrée",
@@ -388,10 +429,45 @@ public class OrderController {
             audit.log(user.id().toString(), "COSIGNATURE_REFUS", AuditService.SUCCES,
                     order.reference(), ip.value());
             notifyAccount(account, "WARN", "Opération rejetée",
-                    "L'ordre " + order.reference() + " a été rejeté car un signataire n'a pas validé "
+                    PREFIXE_ORDRE + order.reference() + " a été rejeté car un signataire n'a pas validé "
                             + "l'opération.", order.reference());
         }
         return scrubForClient(fetch(id));
+    }
+
+    /**
+     * {@code POST /orders/:id/force-validate} — le back-office transmet un ordre
+     * de compte joint <b>sans attendre</b> la reponse de tous les signataires.
+     *
+     * <p>Prevu pour les cas ou l'attente bloquerait inutilement : un signataire
+     * injoignable alors que la fenetre de souscription se ferme, une validation
+     * recueillie hors ligne (guichet, telephone). Les signatures encore en
+     * attente passent en {@code BYPASSED} — ni refusees, ni expirees : la trace
+     * dit qu'un agent a tranche a leur place. Le motif est obligatoire et
+     * l'ensemble des signataires en est notifie.</p>
+     */
+    @PostMapping("/{id}/force-validate")
+    public OrderResponse forceValidate(AuthUser user, ClientIp ip, @PathVariable UUID id,
+                                       @Valid @RequestBody ForceValidateRequest req) {
+        user.require(Permission.ORDER_VALIDATE);
+        OrderResponse order = fetch(id);
+        ApiException.ensure(EN_ATTENTE_SIGNATURES.equals(order.status()),
+                "Cet ordre n'est pas en attente de signatures.");
+
+        // Un refus explicite ne se contourne pas : l'ordre serait deja ANNULE.
+        jdbc.update("UPDATE order_signatures SET status='BYPASSED', decided_at=now() "
+                + "WHERE order_id = ? AND status = 'PENDING'", id);
+        jdbc.update("UPDATE orders SET status='SOUMIS', updated_at=now(), "
+                + "signatures_bypassed_by=?, signatures_bypassed_at=now(), signatures_bypass_motif=? "
+                + "WHERE id = ? AND status = 'EN_ATTENTE_SIGNATURES'", user.id(), req.motif(), id);
+
+        audit.log(user.id().toString(), "COSIGNATURE_VALIDATION_FORCEE", AuditService.SUCCES,
+                order.reference(), ip.value());
+        notifyAccount(order.clientId(), "WARN", "Opération validée par la banque",
+                PREFIXE_ORDRE + order.reference() + " a été transmis par le back-office sans attendre "
+                        + "la validation de tous les signataires. Motif : " + req.motif(),
+                order.reference());
+        return fetch(id);
     }
 
     /** Notifie tous les signataires d'un compte (titulaire principal + co-titulaires). */

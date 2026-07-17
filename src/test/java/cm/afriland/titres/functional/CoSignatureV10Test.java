@@ -159,8 +159,34 @@ class CoSignatureV10Test {
         return (String) r.getBody().get("id");
     }
 
+    /**
+     * Preuves exigees pour VALIDER (V32) : signature manuscrite + photo du visage.
+     * Le contenu importe peu — le serveur stocke les octets et compare les
+     * empreintes ; c'est leur PRESENCE qui est une regle metier.
+     */
+    static final String SIGNATURE = "data:image/png;base64,"
+            + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    static final String PHOTO = "data:image/jpeg;base64,"
+            + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    /** Corps de validation complet (signature + visage). */
+    static Map<String, Object> preuves() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("approve", true);
+        m.put("signatureData", SIGNATURE);
+        m.put("imageBase64", PHOTO);
+        m.put("livenessScore", 0.97);
+        m.put("challengeType", "BLINK");
+        return m;
+    }
+
+    /**
+     * Valider transmet les preuves ; refuser n'en exige aucune (on ne fait pas
+     * prouver son identite pour dire non).
+     */
     ResponseEntity<Map> cosign(String ordre, boolean approve, String token) {
-        return POST("/api/v1/orders/" + ordre + "/cosign", Map.of("approve", approve), token);
+        Object payload = approve ? preuves() : Map.of("approve", false);
+        return POST("/api/v1/orders/" + ordre + "/cosign", payload, token);
     }
 
     // ═══════════════════ Soumission depuis un compte joint ════════════════════
@@ -327,6 +353,178 @@ class CoSignatureV10Test {
 
         ResponseEntity<Map> r = POST("/api/v1/orders/" + ordre + "/cosign",
                 new LinkedHashMap<>(), tokCosignataire);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    // ═══════════ V32 — valider exige signature + visage ═══════════════════════
+
+    /** Valider engage : sans aucune preuve, c'est refuse. */
+    @Test
+    void cosigner_sans_signature_ni_photo_est_rejete() {
+        String ordre = ordreJoint(5.24);
+
+        ResponseEntity<Map> r = POST("/api/v1/orders/" + ordre + "/cosign",
+                Map.of("approve", true), tokCosignataire);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void cosigner_sans_photo_du_visage_est_rejete() {
+        String ordre = ordreJoint(5.25);
+        Map<String, Object> sansPhoto = preuves();
+        sansPhoto.remove("imageBase64");
+
+        ResponseEntity<Map> r = POST("/api/v1/orders/" + ordre + "/cosign", sansPhoto, tokCosignataire);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void cosigner_sans_signature_est_rejete() {
+        String ordre = ordreJoint(5.26);
+        Map<String, Object> sansSignature = preuves();
+        sansSignature.remove("signatureData");
+
+        ResponseEntity<Map> r = POST("/api/v1/orders/" + ordre + "/cosign", sansSignature,
+                tokCosignataire);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    /** Refuser n'exige rien : sinon un refus serait retenu faute de camera. */
+    @Test
+    void refuser_n_exige_ni_signature_ni_photo() {
+        String ordre = ordreJoint(5.27);
+
+        ResponseEntity<Map> r = POST("/api/v1/orders/" + ordre + "/cosign",
+                Map.of("approve", false), tokCosignataire);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("status")).isEqualTo("ANNULE");
+    }
+
+    // ═══════════ V32 — vue back-office « qui a valide / qui attend » ═══════════
+
+    /**
+     * L'agent voit TOUTES les personnes du compte, leur etat, et pour chacune sa
+     * photo d'ouverture et sa photo au moment de la soumission.
+     */
+    @Test
+    void le_back_office_voit_tous_les_signataires_et_leurs_photos() {
+        String ordre = ordreJoint(5.28);
+        cosign(ordre, true, tokCosignataire);
+
+        ResponseEntity<Map> r = GET("/api/v1/admin/orders/" + ordre + "/signatures", tokAgent);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("joint")).isEqualTo(true);
+        List<Map<String, Object>> personnes = (List) r.getBody().get("personnes");
+        assertThat(personnes).hasSize(2);
+        assertThat(personnes).extracting(p -> p.get("role"))
+                .containsExactlyInAnyOrder("EMETTEUR", "COSIGNATAIRE");
+
+        Map<String, Object> cosignataire = personnes.stream()
+                .filter(p -> "COSIGNATAIRE".equals(p.get("role"))).findFirst().orElseThrow();
+        assertThat(cosignataire.get("statut")).isEqualTo("SIGNED");
+        // La photo prise au moment de la validation est bien rattachee a CETTE personne.
+        assertThat((String) cosignataire.get("photoSoumission")).startsWith("data:image");
+        assertThat((String) cosignataire.get("signature")).isNotBlank();
+        assertThat(cosignataire.get("matchStatus")).isNotNull();
+    }
+
+    /** Tant que le co-signataire n'a pas repondu, le BO le voit en attente. */
+    @Test
+    void le_back_office_voit_le_cosignataire_en_attente() {
+        String ordre = ordreJoint(5.29);
+
+        ResponseEntity<Map> r = GET("/api/v1/admin/orders/" + ordre + "/signatures", tokAgent);
+
+        List<Map<String, Object>> personnes = (List) r.getBody().get("personnes");
+        Map<String, Object> cosignataire = personnes.stream()
+                .filter(p -> "COSIGNATAIRE".equals(p.get("role"))).findFirst().orElseThrow();
+        assertThat(cosignataire.get("statut")).isEqualTo("PENDING");
+        assertThat((String) cosignataire.get("photoSoumission")).isEmpty();
+        assertThat(r.getBody().get("signaturesObtenues")).isEqualTo(0);
+    }
+
+    /** Un client ne consulte jamais la vue back-office. */
+    @Test
+    void un_client_ne_voit_pas_la_vue_back_office_des_signataires() {
+        String ordre = ordreJoint(5.30);
+
+        ResponseEntity<Map> r = GET("/api/v1/admin/orders/" + ordre + "/signatures", tokTitulaire);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    // ═══════════ V32 — validation forcee par le back-office ═══════════════════
+
+    /** L'agent transmet l'ordre sans attendre : les PENDING passent en BYPASSED. */
+    @Test
+    void le_back_office_transmet_sans_attendre_tous_les_signataires() {
+        String ordre = ordreJoint(5.31);
+
+        ResponseEntity<Map> r = POST("/api/v1/orders/" + ordre + "/force-validate",
+                Map.of("motif", "Accord recueilli en agence"), tokAgent);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("status")).isEqualTo("SOUMIS");
+
+        Map<String, Object> vue = GET("/api/v1/admin/orders/" + ordre + "/signatures", tokAgent).getBody();
+        List<Map<String, Object>> personnes = (List) vue.get("personnes");
+        assertThat(personnes).anySatisfy(p -> {
+            if ("COSIGNATAIRE".equals(p.get("role"))) {
+                assertThat(p.get("statut")).isEqualTo("BYPASSED");
+            }
+        });
+        // La trace dit QUI a tranche et pourquoi.
+        assertThat(vue.get("bypassMotif")).isEqualTo("Accord recueilli en agence");
+        assertThat(vue.get("bypassPar")).isNotNull();
+    }
+
+    /** Le motif est obligatoire : une validation forcee sans raison n'est pas tracable. */
+    @Test
+    void la_validation_forcee_exige_un_motif() {
+        String ordre = ordreJoint(5.32);
+
+        ResponseEntity<Map> r = POST("/api/v1/orders/" + ordre + "/force-validate",
+                Map.of("motif", "ab"), tokAgent);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    /** Un client ne force jamais la validation de son propre ordre. */
+    @Test
+    void un_client_ne_peut_pas_forcer_la_validation() {
+        String ordre = ordreJoint(5.33);
+
+        ResponseEntity<Map> r = POST("/api/v1/orders/" + ordre + "/force-validate",
+                Map.of("motif", "je veux passer outre"), tokTitulaire);
+
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    /** Apres transmission forcee, le co-signataire ne peut plus se prononcer. */
+    @Test
+    void apres_validation_forcee_le_cosignataire_ne_peut_plus_valider() {
+        String ordre = ordreJoint(5.34);
+        POST("/api/v1/orders/" + ordre + "/force-validate",
+                Map.of("motif", "Cloture imminente"), tokAgent);
+
+        assertThat(cosign(ordre, true, tokCosignataire).getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    /** On ne force que ce qui attend : un ordre deja transmis n'est pas forcable. */
+    @Test
+    void on_ne_force_pas_un_ordre_qui_n_attend_pas_de_signatures() {
+        String ordre = ordreJoint(5.35);
+        cosign(ordre, true, tokCosignataire);
+
+        ResponseEntity<Map> r = POST("/api/v1/orders/" + ordre + "/force-validate",
+                Map.of("motif", "deja transmis"), tokAgent);
 
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
