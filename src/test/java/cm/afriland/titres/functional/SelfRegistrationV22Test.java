@@ -458,7 +458,10 @@ class SelfRegistrationV22Test {
     void convention_courante_est_publique() {
         ResponseEntity<Map> r = GET("/api/v1/registration/convention?langue=FR", null);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(r.getBody().get("version")).isEqualTo("2026-01");
-        assertThat(String.valueOf(r.getBody().get("contenuHtml"))).contains("Article 1");
+        // V33 publie le texte officiel Afriland (FR) en version 2026-07, courante.
+        assertThat(r.getBody().get("version")).isEqualTo("2026-07");
+        assertThat(String.valueOf(r.getBody().get("contenuHtml")))
+                .contains("Article 1")
+                .contains("Compte-titres joint");
     }
 }
