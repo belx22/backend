@@ -28,6 +28,7 @@ import cm.afriland.titres.security.Permission;
 import cm.afriland.titres.support.AttestationPdfService;
 import cm.afriland.titres.support.PageResponse;
 import cm.afriland.titres.support.Pagination;
+import cm.afriland.titres.support.SituationPortefeuillePdfService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -69,12 +70,15 @@ public class DocumentController {
     private final JdbcTemplate jdbc;
     private final AuditService audit;
     private final AttestationPdfService attestations;
+    private final SituationPortefeuillePdfService situations;
 
     public DocumentController(JdbcTemplate jdbc, AuditService audit,
-                              AttestationPdfService attestations) {
+                              AttestationPdfService attestations,
+                              SituationPortefeuillePdfService situations) {
         this.jdbc = jdbc;
         this.audit = audit;
         this.attestations = attestations;
+        this.situations = situations;
     }
 
     record DocumentResponse(
@@ -230,6 +234,64 @@ public class DocumentController {
 
         audit.log(user.id().toString(), "GENERATION_LIVRABLE", AuditService.SUCCES,
                 "ATTESTATION_PROPRIETE", ip.value());
+
+        DocumentResponse row = jdbc.query(META + WHERE_DOC_ID, mapper(null), newId)
+                .stream().findFirst()
+                .orElseThrow(() -> ApiException.notFound(DOC_INTROUVABLE));
+        return ResponseEntity.status(HttpStatus.CREATED).body(row);
+    }
+
+    record SituationRequest(
+            @NotNull UUID clientId,
+            /** Date « à la date de » du releve (ISO, ex. 2026-06-16) ; defaut : aujourd'hui. */
+            String periode,
+            /** Libelle facultatif porte sur l'en-tete (ex. « TRESORERIE »). */
+            @Size(max = 60) String service) {
+    }
+
+    /**
+     * {@code POST /documents/situation-portefeuille} — l'agent back-office edite
+     * la « Situation de portefeuille titres » d'un client et la lui transmet.
+     *
+     * <p>Le PDF est genere par le serveur a partir des positions en base (memes
+     * regles que le portefeuille), puis persiste comme livrable : le client le
+     * retrouve dans son espace « Mes documents ». Permission {@code DOCUMENT_UPLOAD}
+     * (le releve engage la banque ; le client ne fournit rien).</p>
+     */
+    @PostMapping("/situation-portefeuille")
+    public ResponseEntity<DocumentResponse> situationPortefeuille(AuthUser user, ClientIp ip,
+                                                                  @Valid @RequestBody SituationRequest req) {
+        user.require(Permission.DOCUMENT_UPLOAD);
+
+        String destRole = jdbc.query("SELECT role FROM users WHERE id = ?",
+                        (rs, n) -> rs.getString("role"), req.clientId())
+                .stream().findFirst().orElse(null);
+        if (destRole == null) {
+            throw ApiException.notFound("Client destinataire introuvable.");
+        }
+        if (!"CLIENT_PP".equals(destRole) && !"CLIENT_PM".equals(destRole)) {
+            throw ApiException.badRequest("Le destinataire doit être un client.");
+        }
+
+        java.time.LocalDate periode = null;
+        if (req.periode() != null && !req.periode().isBlank()) {
+            try {
+                periode = java.time.LocalDate.parse(req.periode().trim());
+            } catch (java.time.format.DateTimeParseException e) {
+                throw ApiException.badRequest("Période invalide (attendu AAAA-MM-JJ).");
+            }
+        }
+
+        SituationPortefeuillePdfService.Situation situation =
+                situations.generer(req.clientId(), periode, req.service());
+
+        String titre = "Situation de portefeuille titres"
+                + (periode != null ? " au " + periode.format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")) : "");
+        UUID newId = insertDocument("SITUATION_PORTEFEUILLE", titre, req.clientId(), user.id(),
+                "application/pdf", situation.taille(), situation.dataUri());
+
+        audit.log(user.id().toString(), "GENERATION_LIVRABLE", AuditService.SUCCES,
+                "SITUATION_PORTEFEUILLE", ip.value());
 
         DocumentResponse row = jdbc.query(META + WHERE_DOC_ID, mapper(null), newId)
                 .stream().findFirst()
