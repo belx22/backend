@@ -1,8 +1,8 @@
 package cm.afriland.titres.support;
 
+import java.awt.Color;
 import java.io.ByteArrayOutputStream;
 import java.time.LocalDate;
-import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -19,25 +19,38 @@ import com.lowagie.text.FontFactory;
 import com.lowagie.text.PageSize;
 import com.lowagie.text.Paragraph;
 import com.lowagie.text.Phrase;
+import com.lowagie.text.Rectangle;
+import com.lowagie.text.pdf.PdfContentByte;
 import com.lowagie.text.pdf.PdfPCell;
 import com.lowagie.text.pdf.PdfPTable;
+import com.lowagie.text.pdf.PdfPageEventHelper;
 import com.lowagie.text.pdf.PdfWriter;
 
 import cm.afriland.titres.error.ApiException;
 
 /**
- * Genere l'attestation de propriete de titres (CSFT §M4-F02) en PDF, cote
- * serveur, a partir des seules donnees de la base.
+ * Genere l'attestation de propriete de titre (CSFT §M4-F02) en PDF, cote
+ * serveur, a partir des seules donnees de la base — reproduit la mise en forme
+ * du document officiel Afriland First Bank.
  *
  * <p>La generation est volontairement serveur : l'attestation engage la banque
- * en tant que teneur de compte conservateur. Un rendu cote navigateur, puis
- * televerse, laisserait le porteur maitre du contenu de sa propre attestation.
- * Ici le client ne fournit rien — il declenche seulement l'edition.
+ * en tant que teneur de compte conservateur. Le client ne fournit rien — il
+ * declenche seulement l'edition (ou l'agent l'edite pour lui).</p>
+ *
+ * <p>Mise en page : une bande grise a gauche (laissee vide) et le contenu
+ * decale sur la droite ; titre encadre ; un bloc borde par titre detenu.</p>
  */
 @Service
 public class AttestationPdfService {
 
     private static final DateTimeFormatter JOUR = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+    private static final DateTimeFormatter JOUR_LONG =
+            DateTimeFormatter.ofPattern("dd MMMM yyyy", Locale.FRENCH);
+
+    /** Largeur de la bande grise de gauche (points) — laissee vide. */
+    private static final float BANDE_LARGEUR = 96f;
+    private static final Color BANDE_GRISE = new Color(0xEC, 0xED, 0xF0);
+    private static final Color CADRE_FOND = new Color(0xEC, 0xEC, 0xEE);
 
     /**
      * Positions du porteur, derivees des ordres adjuges (memes regles que le
@@ -45,7 +58,7 @@ public class AttestationPdfService {
      * pour editer une attestation portant sur un seul titre.
      */
     private static final String POSITIONS_SQL = """
-            SELECT e.code AS emission_code, o.isin, e.nature, e.pays_code, e.date_echeance,
+            SELECT e.code AS emission_code, e.libelle, o.isin, e.nature, e.pays_code, e.date_echeance,
                    sum(coalesce(o.volume_alloue, 0))::bigint       AS volume,
                    e.valeur_nominale_unitaire                      AS valeur_nominale,
                    sum(coalesce(o.montant_adjuge, 0))::bigint      AS valeur_totale
@@ -54,7 +67,7 @@ public class AttestationPdfService {
              WHERE o.client_id = ?
                AND o.status IN ('TOTALEMENT_RETENU', 'PARTIELLEMENT_RETENU')
                %s
-             GROUP BY e.id, o.isin, e.code, e.nature, e.pays_code, e.date_echeance,
+             GROUP BY e.id, e.libelle, o.isin, e.code, e.nature, e.pays_code, e.date_echeance,
                       e.valeur_nominale_unitaire
             HAVING sum(coalesce(o.volume_alloue, 0)) > 0
              ORDER BY e.date_echeance
@@ -66,8 +79,9 @@ public class AttestationPdfService {
         this.jdbc = jdbc;
     }
 
-    private record Ligne(String emissionCode, String isin, String nature, String emetteur,
-                         LocalDate dateEcheance, long volume, long valeurNominale, long valeurTotale) {
+    private record Ligne(String emissionCode, String libelle, String isin, String nature,
+                         String emetteur, LocalDate dateEcheance, long volume, long valeurNominale,
+                         long valeurTotale) {
     }
 
     private record Titulaire(String nom, String compteTitres) {
@@ -77,12 +91,6 @@ public class AttestationPdfService {
     public record Attestation(String dataUri, String taille) {
     }
 
-    /**
-     * Edite l'attestation du porteur {@code clientId} a partir de la base.
-     *
-     * @throws ApiException si le porteur ne detient aucune position : une
-     *                      attestation de propriete sans titre n'a pas d'objet.
-     */
     public Attestation generer(UUID clientId) {
         return generer(clientId, null);
     }
@@ -114,6 +122,7 @@ public class AttestationPdfService {
 
         List<Ligne> lignes = jdbc.query(sql, (rs, n) -> new Ligne(
                 rs.getString("emission_code"),
+                rs.getString("libelle"),
                 rs.getString("isin"),
                 rs.getString("nature"),
                 Countries.label(rs.getString("pays_code")),
@@ -135,73 +144,133 @@ public class AttestationPdfService {
     // ── Rendu ────────────────────────────────────────────────────────────────
 
     private byte[] rendre(Titulaire titulaire, List<Ligne> lignes) {
-        Font h1 = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 14);
-        Font h2 = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 11);
+        Font nomBanque = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 15);
+        Font titre = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 13);
         Font normal = FontFactory.getFont(FontFactory.HELVETICA, 10);
+        Font gras = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 10);
         Font petit = FontFactory.getFont(FontFactory.HELVETICA, 8);
-        Font entete = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 9);
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        Document doc = new Document(PageSize.A4, 48, 48, 56, 48);
-        PdfWriter.getInstance(doc, out);
+        // Marge gauche large : tout le contenu se decale a droite de la bande grise.
+        Document doc = new Document(PageSize.A4, BANDE_LARGEUR + 20, 44, 44, 44);
+        PdfWriter writer = PdfWriter.getInstance(doc, out);
+        writer.setPageEvent(new PdfPageEventHelper() {
+            @Override
+            public void onStartPage(PdfWriter w, Document d) {
+                PdfContentByte cb = w.getDirectContentUnder();
+                Rectangle ps = d.getPageSize();
+                cb.setColorFill(BANDE_GRISE);
+                cb.rectangle(0, 0, BANDE_LARGEUR, ps.getHeight());
+                cb.fill();
+            }
+        });
         doc.open();
 
-        doc.add(centre("AFRILAND FIRST BANK", h2));
-        doc.add(centre("Spécialiste en Valeurs du Trésor", normal));
-        doc.add(centre("Teneur de compte conservateur — agrément COSUMAF-I.MFAC01/2015", petit));
-        doc.add(espace(18));
+        // En-tete : nom de la banque, centre sur la zone de contenu.
+        doc.add(centre("Afriland First Bank", nomBanque));
+        doc.add(espace(16));
 
-        doc.add(centre("ATTESTATION DE PROPRIÉTÉ DE TITRES", h1));
-        doc.add(espace(18));
+        // Titre encadre.
+        PdfPTable cadre = new PdfPTable(1);
+        cadre.setWidthPercentage(88);
+        PdfPCell tc = new PdfPCell(new Phrase("ATTESTATION DE PROPRIÉTÉ DE TITRE", titre));
+        tc.setHorizontalAlignment(Element.ALIGN_CENTER);
+        tc.setBackgroundColor(CADRE_FOND);
+        tc.setBorderWidth(1.5f);
+        tc.setPadding(12);
+        cadre.addCell(tc);
+        doc.add(cadre);
+        doc.add(espace(20));
 
-        doc.add(new Paragraph(
-                "Nous soussignés, Afriland First Bank, teneur de compte conservateur, attestons "
-                        + "que les titres désignés ci-après sont inscrits en compte au nom du titulaire "
-                        + "suivant, à la date d'édition du présent document.", normal));
+        // Corps.
+        doc.add(justifie("Nous soussignés, Afriland First Bank, Société Anonyme au Capital de FCFA "
+                + "50.000.000.000 dont le Siège Social est à Yaoundé, B.P. 11834, Spécialiste en "
+                + "valeurs du Trésor et Intermédiaire du Marché Financier d'Afrique Centrale agréé "
+                + "par la Commission de Surveillance du Marché Financier d'Afrique Centrale sous le "
+                + "numéro COSUMAF-I. MFAC-01/2015.", normal));
         doc.add(espace(12));
 
-        doc.add(new Paragraph("Titulaire : " + titulaire.nom(), h2));
-        doc.add(new Paragraph("Compte-titres : " + titulaire.compteTitres(), normal));
+        String verbe = lignes.size() > 1 ? "les valeurs" : "la valeur";
+        doc.add(justifie("Attestons que " + titulaire.nom() + ", entretient dans son compte titre "
+                + "N° " + titulaire.compteTitres() + ", tenu dans nos livres, " + verbe + " :", normal));
         doc.add(espace(14));
 
-        PdfPTable table = new PdfPTable(new float[] { 2.4f, 1.6f, 0.9f, 1.5f, 1f, 1.6f, 1.3f });
-        table.setWidthPercentage(100);
-        for (String col : new String[] {
-                "ISIN", "Émission", "Nature", "Émetteur", "Volume", "Valeur totale", "Échéance" }) {
-            table.addCell(cellule(col, entete, Element.ALIGN_LEFT, true));
-        }
-
-        long totalVolume = 0;
-        long totalValeur = 0;
+        LocalDate aujourdHui = LocalDate.now(ZoneOffset.UTC);
         for (Ligne l : lignes) {
-            table.addCell(cellule(l.isin(), petit, Element.ALIGN_LEFT, false));
-            table.addCell(cellule(l.emissionCode(), petit, Element.ALIGN_LEFT, false));
-            table.addCell(cellule(l.nature(), petit, Element.ALIGN_LEFT, false));
-            table.addCell(cellule(l.emetteur(), petit, Element.ALIGN_LEFT, false));
-            table.addCell(cellule(montant(l.volume()), petit, Element.ALIGN_RIGHT, false));
-            table.addCell(cellule(montant(l.valeurTotale()) + " FCFA", petit, Element.ALIGN_RIGHT, false));
-            table.addCell(cellule(l.dateEcheance() == null ? "—" : l.dateEcheance().format(JOUR),
-                    petit, Element.ALIGN_LEFT, false));
-            totalVolume += l.volume();
-            totalValeur += l.valeurTotale();
+            doc.add(boiteTitre(l, aujourdHui, normal, gras));
+            doc.add(espace(14));
         }
-        doc.add(table);
-        doc.add(espace(10));
 
-        doc.add(new Paragraph("Nombre de lignes : " + lignes.size(), normal));
-        doc.add(new Paragraph("Volume total : " + montant(totalVolume) + " titres", normal));
-        doc.add(new Paragraph("Valeur totale : " + montant(totalValeur) + " FCFA", h2));
+        doc.add(espace(4));
+        doc.add(justifie("En foi de quoi, la présente Attestation est délivrée pour servir et "
+                + "valoir ce que de droit.", normal));
         doc.add(espace(24));
 
-        OffsetDateTime maintenant = OffsetDateTime.now(ZoneOffset.UTC);
-        doc.add(new Paragraph("Fait à Yaoundé, le " + maintenant.format(JOUR), normal));
-        doc.add(espace(8));
-        doc.add(new Paragraph(
-                "Document édité et signé électroniquement par le système — conforme BEAC / COBAC / "
-                        + "COSUMAF. Toute altération le rend nul.", petit));
+        doc.add(centre("Fait à Yaoundé, le " + aujourdHui.format(JOUR_LONG), normal));
+        doc.add(espace(48));
+
+        doc.add(new Paragraph("Pour Afriland First Bank, teneur de compte conservateur.", petit));
+        doc.add(espace(4));
+        doc.add(new Paragraph("Document édité électroniquement par le système — toute altération "
+                + "le rend nul.", petit));
 
         doc.close();
         return out.toByteArray();
+    }
+
+    /** Bloc borde d'un titre : reproduit la liste de champs de l'attestation. */
+    private PdfPTable boiteTitre(Ligne l, LocalDate date, Font normal, Font gras) {
+        PdfPTable inner = new PdfPTable(new float[] { 2.3f, 4.2f });
+        inner.setWidthPercentage(100);
+
+        champ(inner, "Dénomination", denomination(l), normal, gras);
+        champ(inner, "Catégorie", l.nature(), normal, gras);
+        vide(inner);
+        champ(inner, "Emetteur", l.emetteur(), normal, gras);
+        champ(inner, "Total crédit", montant(l.volume()), normal, gras);
+        champ(inner, "Total débit", "0", normal, gras);
+        vide(inner);
+        champ(inner, "Solde au " + date.format(JOUR), montant(l.volume()), normal, gras);
+        champ(inner, "Valeur XAF",
+                montant(l.valeurTotale()) + " (" + capitale(enLettres(l.valeurTotale())) + ")",
+                normal, gras);
+
+        PdfPCell wrap = new PdfPCell(inner);
+        wrap.setPadding(10);
+        wrap.setBorderWidth(1f);
+        PdfPTable box = new PdfPTable(1);
+        box.setWidthPercentage(90);
+        box.addCell(wrap);
+        return box;
+    }
+
+    private static void champ(PdfPTable t, String label, String valeur, Font normal, Font gras) {
+        PdfPCell lc = new PdfPCell(new Phrase("-   " + label, normal));
+        lc.setBorder(Rectangle.NO_BORDER);
+        lc.setPaddingBottom(4);
+        t.addCell(lc);
+        PdfPCell vc = new PdfPCell(new Phrase(":   " + (valeur == null ? "—" : valeur), gras));
+        vc.setBorder(Rectangle.NO_BORDER);
+        vc.setPaddingBottom(4);
+        t.addCell(vc);
+    }
+
+    private static void vide(PdfPTable t) {
+        for (int i = 0; i < 2; i++) {
+            PdfPCell c = new PdfPCell(new Phrase(" "));
+            c.setBorder(Rectangle.NO_BORDER);
+            c.setFixedHeight(7);
+            t.addCell(c);
+        }
+    }
+
+    /** « Dénomination » = code de l'émission suivi de son libellé (sans répétition). */
+    private static String denomination(Ligne l) {
+        String code = l.emissionCode() == null ? "" : l.emissionCode().trim();
+        String lib = l.libelle() == null ? "" : l.libelle().trim();
+        if (code.isEmpty()) return lib.isEmpty() ? "—" : lib;
+        if (lib.isEmpty() || lib.startsWith(code)) return lib.isEmpty() ? code : lib;
+        return code + " " + lib;
     }
 
     // ── Mise en forme ────────────────────────────────────────────────────────
@@ -212,29 +281,104 @@ public class AttestationPdfService {
         return p;
     }
 
+    private static Paragraph justifie(String texte, Font f) {
+        Paragraph p = new Paragraph(texte, f);
+        p.setAlignment(Element.ALIGN_JUSTIFIED);
+        return p;
+    }
+
     private static Paragraph espace(float hauteur) {
         Paragraph p = new Paragraph(" ");
         p.setSpacingAfter(hauteur);
         return p;
     }
 
-    private static PdfPCell cellule(String texte, Font f, int alignement, boolean entete) {
-        PdfPCell c = new PdfPCell(new Phrase(texte == null ? "—" : texte, f));
-        c.setHorizontalAlignment(alignement);
-        c.setPadding(5);
-        if (entete) {
-            c.setBackgroundColor(new java.awt.Color(0xF3, 0xF4, 0xF6));
-        }
-        return c;
-    }
-
     /** Separateur de milliers par espace insecable — convention francaise (FCFA). */
     private static String montant(long valeur) {
-        return String.format(Locale.FRANCE, "%,d", valeur).replace(' ', ' ');
+        return String.format(Locale.FRANCE, "%,d", valeur).replace(' ', ' ');
     }
 
     private static String tailleLisible(int octets) {
         if (octets < 1024) return octets + " o";
         return Math.round(octets / 1024.0) + " Ko";
+    }
+
+    // ── Montant en toutes lettres (francais) ─────────────────────────────────
+
+    private static final String[] UNITES = {
+            "zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf",
+            "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize",
+            "dix-sept", "dix-huit", "dix-neuf" };
+
+    static String enLettres(long n) {
+        if (n == 0) return "zéro";
+        if (n < 0) return "moins " + enLettres(-n);
+
+        StringBuilder sb = new StringBuilder();
+        long milliards = n / 1_000_000_000L;
+        long millions = (n % 1_000_000_000L) / 1_000_000L;
+        long milliers = (n % 1_000_000L) / 1000L;
+        int reste = (int) (n % 1000L);
+
+        if (milliards > 0) sb.append(groupe(milliards, "milliard")).append(' ');
+        if (millions > 0) sb.append(groupe(millions, "million")).append(' ');
+        if (milliers == 1) {
+            sb.append("mille ");
+        } else if (milliers > 1) {
+            sb.append(troisChiffres((int) milliers)).append(" mille ");
+        }
+        if (reste > 0) sb.append(troisChiffres(reste));
+        return sb.toString().trim();
+    }
+
+    /** {@code n} fois « million » / « milliard » (accord en nombre). */
+    private static String groupe(long n, String mot) {
+        String pluriel = mot + (n > 1 ? "s" : "");
+        return (n == 1 ? "un" : troisChiffres((int) n)) + " " + pluriel;
+    }
+
+    private static String troisChiffres(int n) {
+        if (n == 0) return "";
+        int c = n / 100;
+        int r = n % 100;
+        StringBuilder sb = new StringBuilder();
+        if (c > 0) {
+            if (c > 1) sb.append(UNITES[c]).append(' ');
+            sb.append("cent");
+            if (c > 1 && r == 0) sb.append('s');
+            if (r > 0) sb.append(' ');
+        }
+        if (r > 0) sb.append(dizaines(r));
+        return sb.toString().trim();
+    }
+
+    private static String dizaines(int n) {
+        if (n < 20) return UNITES[n];
+        int d = n / 10;
+        int u = n % 10;
+        String base;
+        switch (d) {
+            case 2: base = "vingt"; break;
+            case 3: base = "trente"; break;
+            case 4: base = "quarante"; break;
+            case 5: base = "cinquante"; break;
+            case 6: base = "soixante"; break;
+            case 7:
+                if (u == 0) return "soixante-dix";
+                if (u == 1) return "soixante et onze";
+                return "soixante-" + UNITES[10 + u];
+            case 8:
+                return u == 0 ? "quatre-vingts" : "quatre-vingt-" + UNITES[u];
+            case 9:
+                return u == 0 ? "quatre-vingt-dix" : "quatre-vingt-" + UNITES[10 + u];
+            default: return "";
+        }
+        if (u == 0) return base;
+        if (u == 1) return base + " et un";
+        return base + "-" + UNITES[u];
+    }
+
+    private static String capitale(String s) {
+        return s.isEmpty() ? s : Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
 }
