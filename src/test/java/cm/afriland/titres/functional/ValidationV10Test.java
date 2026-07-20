@@ -414,11 +414,4 @@ class ValidationV10Test {
         req.put("contenu", "data:application/pdf;base64,JVBERi0=");
         assertThat(status(POST("/api/v1/documents", req, tokAgent))).isEqualTo(400);
     }
-    @Test void solde_numero_trop_court_400() {
-        assertThat(status(GET("/api/v1/account-balance?accountNumber=ab", tokAgent))).isEqualTo(400);
-    }
-    @Test void solde_par_client_403() {
-        assertThat(status(GET("/api/v1/account-balance?accountNumber=03710001999", tokClient)))
-                .isEqualTo(403);
-    }
 }

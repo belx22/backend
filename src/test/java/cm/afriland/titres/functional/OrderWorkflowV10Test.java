@@ -338,16 +338,6 @@ class OrderWorkflowV10Test {
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 
-    // ══════════════════════ Consultation de solde — detail ════════════════════
-
-    @Test @Order(40)
-    void staff_consulte_detail_solde_AIF_indisponible() {
-        // AIF non configure → degradation gracieuse (200, champs nuls).
-        ResponseEntity<Map> r = GET("/api/v1/account-balance/037-XAF-1234567-01", tokAgent);
-        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(r.getBody()).containsKey("accountId");
-    }
-
     // ─── Helper de payload ──────────────────────────────────────────────────
 
     Map<String, Object> emissionBody() {

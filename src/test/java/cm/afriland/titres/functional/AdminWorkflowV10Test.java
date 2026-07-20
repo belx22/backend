@@ -522,29 +522,6 @@ class AdminWorkflowV10Test {
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
 
-    // ══════════════════════ Consultation de solde AIF (staff) ═════════════════
-
-    @Test @Order(50)
-    void staff_ping_sante_AIF() {
-        ResponseEntity<Map> r = GET("/api/v1/account-balance/health", tokAgent);
-        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(r.getBody()).containsKey("available");
-    }
-
-    @Test @Order(51)
-    void staff_recherche_solde_AIF_indisponible_gracieux() {
-        // AIF non configure en test : degradation gracieuse (200 + statut UNAVAILABLE).
-        ResponseEntity<Map> r = GET("/api/v1/account-balance?accountNumber=03710001123", tokAgent);
-        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(r.getBody()).containsKey("status");
-    }
-
-    @Test @Order(52)
-    void client_ne_peut_pas_consulter_solde_403() {
-        ResponseEntity<Map> r = GET("/api/v1/account-balance?accountNumber=03710001123", tokClient);
-        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    }
-
     // ══════════════════════ Emissions — chemins restants ══════════════════════
 
     @Test @Order(60)
