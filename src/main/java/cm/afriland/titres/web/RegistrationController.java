@@ -151,6 +151,20 @@ public class RegistrationController {
         String typePersonne = req.typePersonne() == null ? "PP" : req.typePersonne();
         String hash = password.hash(req.password());
         String compteEspeces = req.compteEspeces().trim();
+        String typeCompte = req.typeCompte() == null ? "INDIVIDUEL" : req.typeCompte();
+
+        // Unicite du numero de compte especes : un meme numero ne peut appartenir
+        // qu'a UN titulaire, SAUF pour un compte JOINT — ou les co-titulaires
+        // partagent legitimement le meme compte. En compte individuel, un doublon
+        // est refuse et signale au prospect.
+        if (!"JOINT".equals(typeCompte)) {
+            Long dejaPris = jdbc.queryForObject(
+                    "SELECT count(*) FROM users WHERE compte_especes = ? "
+                            + "AND role IN ('CLIENT_PP', 'CLIENT_PM')", Long.class, compteEspeces);
+            if (dejaPris != null && dejaPris > 0) {
+                throw ApiException.conflict("Ce numéro de compte existe déjà.");
+            }
+        }
 
         // ── Rapprochement avec le referentiel de la banque ────────────────────
         // Le numero de compte est la clef : s'il figure dans la « BASE CLIENTS »
@@ -183,8 +197,6 @@ public class RegistrationController {
                 "PM".equals(typePersonne) ? Rbac.CLIENT_PM : ROLE_CLIENT_PP,
                 req.nom().trim(), trimOrNull(req.prenom()), telephone,
                 compteEspeces, compteDepot);
-
-        String typeCompte = req.typeCompte() == null ? "INDIVIDUEL" : req.typeCompte();
 
         UUID dossierId = jdbc.queryForObject(
                 "INSERT INTO registration_dossiers (user_id, type_personne, type_compte, "

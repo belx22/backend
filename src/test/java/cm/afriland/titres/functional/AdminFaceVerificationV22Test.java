@@ -68,11 +68,14 @@ class AdminFaceVerificationV22Test {
     @BeforeAll
     void setUp() {
         rest = client(cookieStore);
-        // 1) Un prospect s'inscrit et depose sa capture faciale.
+        // 1) Un prospect s'inscrit et depose sa capture faciale. Compte especes
+        // UNIQUE : un numero ne peut appartenir qu'a un seul titulaire (sauf joint).
         String email = "adm+" + UUID.randomUUID() + "@example.cm";
+        String compteEspeces = "10005" + String.format("%018d",
+                Math.abs(UUID.randomUUID().getMostSignificantBits() % 1_000_000_000_000_000_000L));
         ResponseEntity<Map> reg = POST("/api/v1/registration/register", Map.of(
                 "email", email, "password", "MotDePasse1", "nom", "ESSOMBA",
-                "typePersonne", "PP", "compteEspeces", "10005000905601009000048"), null);
+                "typePersonne", "PP", "compteEspeces", compteEspeces), null);
         assertThat(reg.getStatusCode()).isEqualTo(HttpStatus.OK);
         dossierId = String.valueOf(reg.getBody().get("dossierId"));
         String tokenProspect = (String) ((Map) reg.getBody().get("auth")).get("accessToken");

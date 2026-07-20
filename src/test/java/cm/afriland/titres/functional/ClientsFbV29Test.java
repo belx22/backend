@@ -191,6 +191,14 @@ class ClientsFbV29Test {
                 "compteEspeces", compteEspeces), null);
     }
 
+    /** Inscription declarant un compte JOINT (les co-titulaires partagent le numero). */
+    ResponseEntity<Map> inscrireJoint(String compteEspeces) {
+        return POST("/api/v1/registration/register", Map.of(
+                "email", "fbj+" + UUID.randomUUID() + "@example.cm", "password", "MotDePasse1",
+                "nom", "MEKULU", "prenom", "M", "typePersonne", "PP",
+                "typeCompte", "JOINT", "compteEspeces", compteEspeces), null);
+    }
+
     // ═══════════════════════════════ Tests ════════════════════════════════════
 
     @Test
@@ -315,24 +323,29 @@ class ClientsFbV29Test {
     }
 
     /**
-     * Un compte de depot ne sert qu'une fois ({@code users.compte_titres} est UNIQUE).
-     * Une seconde inscription sur le MEME compte bancaire (co-titulaire, ou simple
-     * re-inscription) ne doit donc pas exploser : elle aboutit, sans compte de depot,
-     * et c'est le back-office qui tranchera.
+     * Un numero de compte ne peut appartenir qu'a UN titulaire : une seconde
+     * inscription INDIVIDUELLE sur le meme compte est refusee (le numero existe
+     * deja). Seul un compte JOINT — ou les co-titulaires partagent legitimement
+     * le compte — peut reutiliser le meme numero.
      */
     @Test
-    void une_seconde_inscription_sur_le_meme_compte_n_echoue_pas() {
+    void un_second_compte_individuel_sur_le_meme_numero_est_refuse_sauf_joint() {
         String numero = numeroFichier();
         POST("/api/v1/admin/clients-fb/import",
                 Map.of("lignes", List.of(ligneIdentiteDistincte(numero, depot(numero)))), agent);
 
+        // 1re inscription individuelle : OK.
         assertThat(inscrire("10005" + numero).getStatusCode()).isEqualTo(HttpStatus.OK);
 
-        ResponseEntity<Map> second = inscrire("10005" + numero);
-        assertThat(second.getStatusCode())
-                .as("le compte de depot est deja pris — l'inscription doit tout de meme aboutir")
+        // 2e inscription individuelle sur le MEME compte : refusee.
+        assertThat(inscrire("10005" + numero).getStatusCode())
+                .as("un numero deja pris par un compte individuel est refuse")
+                .isEqualTo(HttpStatus.CONFLICT);
+
+        // Mais un compte JOINT peut partager le meme numero (co-titulaire).
+        assertThat(inscrireJoint("10005" + numero).getStatusCode())
+                .as("un compte joint partage legitimement le numero")
                 .isEqualTo(HttpStatus.OK);
-        assertThat(second.getBody().get("clientConnu")).isEqualTo(true);
     }
 
     /** Compte inconnu : nouveau client, sans compte de depot — a orienter en agence. */

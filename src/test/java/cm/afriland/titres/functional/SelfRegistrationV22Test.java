@@ -65,6 +65,9 @@ class SelfRegistrationV22Test {
     String emailPrincipal;
     String tokenPrincipal;
     String dossierId;
+    // Compte especes UNIQUE par execution : un numero ne peut appartenir qu'a un
+    // seul titulaire (sauf compte joint), donc chaque classe utilise le sien.
+    String compteEspeces;
 
     private static final String IMG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==";
 
@@ -72,10 +75,11 @@ class SelfRegistrationV22Test {
     void setUp() {
         rest = client(cookieStore);
         emailPrincipal = "auto+" + UUID.randomUUID() + "@example.cm";
+        compteEspeces = compteEspecesAleatoire();
         ResponseEntity<Map> r = POST("/api/v1/registration/register", Map.of(
                 "email", emailPrincipal, "password", "MotDePasse1", "nom", "NGONO",
                 "prenom", "Alice", "telephone", "+237690000000",
-                "typePersonne", "PP", "compteEspeces", "10005000905601009000048"), null);
+                "typePersonne", "PP", "compteEspeces", compteEspeces), null);
         assertThat(r.getStatusCode()).as("register").isEqualTo(HttpStatus.OK);
         dossierId = String.valueOf(r.getBody().get("dossierId"));
         Map auth = (Map) r.getBody().get("auth");
@@ -136,7 +140,7 @@ class SelfRegistrationV22Test {
     void register_refuse_un_email_deja_utilise() {
         ResponseEntity<Map> r = POST("/api/v1/registration/register", Map.of(
                 "email", emailPrincipal, "password", "MotDePasse1", "nom", "DUP",
-                "typePersonne", "PP", "compteEspeces", "10005000905601009000048"), null);
+                "typePersonne", "PP", "compteEspeces", compteEspeces), null);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
     }
 
@@ -260,7 +264,7 @@ class SelfRegistrationV22Test {
     void le_compte_especes_est_rattache_au_profil_des_l_inscription() {
         ResponseEntity<Map> me = GET("/api/v1/auth/me", tokenPrincipal);
         assertThat(me.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(me.getBody().get("compteEspeces")).isEqualTo("10005000905601009000048");
+        assertThat(me.getBody().get("compteEspeces")).isEqualTo(compteEspeces);
         assertThat(me.getBody().get("compteTitres")).isNull();   // attribue par l'agent
     }
 
