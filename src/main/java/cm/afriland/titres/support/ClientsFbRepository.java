@@ -5,8 +5,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+
+import cm.afriland.titres.error.ApiException;
 
 /**
  * Referentiel des clients Afriland deja existants (table {@code clients_fb}),
@@ -21,6 +24,9 @@ public class ClientsFbRepository {
 
     /** Code banque Afriland — prefixe du RIB, absent du fichier source. */
     public static final String CODE_BANQUE = "10005";
+
+    /** Longueur EXACTE imposee au compte de depot (nomenclature bancaire, ex. CCEICMCXXnnn). */
+    public static final int LONGUEUR_COMPTE_DEPOT = 12;
 
     private final JdbcTemplate jdbc;
 
@@ -41,6 +47,8 @@ public class ClientsFbRepository {
         IMPORTE,
         /** Numero de compte absent ou mal forme (18 chiffres attendus). */
         NUMERO_INVALIDE,
+        /** Compte de depot present mais de longueur != 12 (nomenclature bancaire). */
+        DEPOT_INVALIDE,
         /** Meme nom+prenom, categorie et telephone qu'une AUTRE ligne deja
          *  en base : tres probablement le meme client saisi deux fois sous un
          *  numero de compte different (erreur de saisie du fichier source). */
@@ -86,6 +94,13 @@ public class ClientsFbRepository {
             return UpsertOutcome.NUMERO_INVALIDE;   // ligne inexploitable : signalee a l'agent, pas importee
         }
 
+        // Compte de depot : quand il est renseigne, il doit respecter la nomenclature
+        // bancaire (exactement 12 caracteres). Sinon la ligne est ecartee.
+        String compteDepot = texte(ligne.get("compteDepot"));
+        if (compteDepot != null && compteDepot.length() != LONGUEUR_COMPTE_DEPOT) {
+            return UpsertOutcome.DEPOT_INVALIDE;
+        }
+
         String nomPrenom = texte(ligne.get("nomPrenom"));
         String categorie = texte(ligne.get("categorie"));
         String telephone1 = texte(ligne.get("telephone1"));
@@ -121,11 +136,53 @@ public class ClientsFbRepository {
                 """,
                 nomPrenom, numero,
                 agence(ligne.get("agence"), numero), texte(ligne.get("matricule")),
-                categorie, texte(ligne.get("compteDepot")),
+                categorie, compteDepot,
                 oui(ligne.get("assujettiTaxes")), texte(ligne.get("localisation")),
                 texte(ligne.get("dirigeant")), telephone1,
                 texte(ligne.get("telephone2")), texte(ligne.get("email")), par);
         return UpsertOutcome.IMPORTE;
+    }
+
+    /**
+     * Met a jour une fiche EXISTANTE du referentiel (edition back-office), sans la
+     * recreer. Le numero de compte doit rester valide (18 chiffres) et le compte de
+     * depot, s'il est renseigne, respecter la nomenclature (exactement 12 caracteres).
+     *
+     * @throws ApiException 400 numero/depot invalide, 404 fiche introuvable,
+     *                      409 si le numero entre en conflit avec une autre fiche.
+     */
+    public void update(java.util.UUID id, Map<String, Object> data, UUID par) {
+        String numero = normaliser(texte(data.get("numeroCompte")));
+        if (numero == null || !numero.matches("\\d{18}")) {
+            throw ApiException.badRequest("Le numéro de compte doit comporter 18 chiffres.");
+        }
+        String compteDepot = texte(data.get("compteDepot"));
+        if (compteDepot != null && compteDepot.length() != LONGUEUR_COMPTE_DEPOT) {
+            throw ApiException.badRequest(
+                    "Le compte de dépôt doit contenir exactement " + LONGUEUR_COMPTE_DEPOT + " caractères.");
+        }
+        int updated;
+        try {
+            updated = jdbc.update("""
+                    UPDATE clients_fb SET nom_prenom = ?, numero_compte = ?, agence = ?,
+                        matricule = ?, categorie = ?, compte_depot = ?, assujetti_taxes = ?,
+                        localisation = ?, dirigeant = ?, telephone1 = ?, telephone2 = ?,
+                        email = ?, imported_at = now(), imported_by = ?
+                    WHERE id = ?
+                    """,
+                    texte(data.get("nomPrenom")), numero, agence(data.get("agence"), numero),
+                    texte(data.get("matricule")), texte(data.get("categorie")), compteDepot,
+                    // A l'edition, l'assujettissement arrive deja typé (Boolean) — pas « OUI/NON ».
+                    data.get("assujettiTaxes") instanceof Boolean b ? b : oui(data.get("assujettiTaxes")),
+                    texte(data.get("localisation")),
+                    texte(data.get("dirigeant")), texte(data.get("telephone1")),
+                    texte(data.get("telephone2")), texte(data.get("email")), par, id);
+        } catch (DataIntegrityViolationException e) {
+            throw ApiException.conflict("Ce numéro de compte est déjà utilisé par une autre fiche.");
+        }
+        if (updated == 0) {
+            throw ApiException.notFound("Fiche introuvable.");
+        }
     }
 
     /** L'agence est les 5 premiers chiffres du numero — la colonne du fichier n'est qu'un rappel. */

@@ -64,18 +64,68 @@ public class ClientsFbController {
         int importees = 0;
         int ignorees = 0;
         int doublons = 0;
+        int depotsInvalides = 0;
         for (Map<String, Object> ligne : req.lignes()) {
             switch (referentiel.upsert(ligne, user.id())) {
                 case IMPORTE -> importees++;
                 case DOUBLON_IDENTITE -> doublons++;
                 case NUMERO_INVALIDE -> ignorees++;
+                case DEPOT_INVALIDE -> depotsInvalides++;
             }
         }
 
         audit.log(user.id().toString(), "IMPORT_BASE_CLIENTS", AuditService.SUCCES,
                 importees + " ligne(s), " + doublons + " doublon(s) ecarte(s)", clientIp.value());
         return Map.of("importees", importees, "ignorees", ignorees, "doublons", doublons,
-                "total", req.lignes().size());
+                "depotsInvalides", depotsInvalides, "total", req.lignes().size());
+    }
+
+    record UpdateRequest(
+            @jakarta.validation.constraints.NotBlank(message = "le nom est requis")
+            @jakarta.validation.constraints.Size(max = 200) String nomPrenom,
+            @jakarta.validation.constraints.NotBlank String numeroCompte,
+            @jakarta.validation.constraints.Size(max = 10) String agence,
+            @jakarta.validation.constraints.Size(max = 50) String matricule,
+            @jakarta.validation.constraints.Size(max = 100) String categorie,
+            @jakarta.validation.constraints.Size(max = 40) String compteDepot,
+            Boolean assujettiTaxes,
+            @jakarta.validation.constraints.Size(max = 200) String localisation,
+            @jakarta.validation.constraints.Size(max = 200) String dirigeant,
+            @jakarta.validation.constraints.Size(max = 40) String telephone1,
+            @jakarta.validation.constraints.Size(max = 40) String telephone2,
+            @jakarta.validation.constraints.Size(max = 200) String email) {
+    }
+
+    /**
+     * Edition d'une fiche EXISTANTE du referentiel (back-office) : on met a jour ses
+     * informations sans recreer la fiche. Le compte de depot, s'il est renseigne, doit
+     * respecter la nomenclature bancaire (exactement 12 caracteres).
+     */
+    @org.springframework.web.bind.annotation.PutMapping("/{id}")
+    public Map<String, Object> update(AuthUser user,
+                                      @org.springframework.web.bind.annotation.PathVariable java.util.UUID id,
+                                      @jakarta.validation.Valid @RequestBody UpdateRequest req,
+                                      ClientIp clientIp) {
+        user.require(Permission.CLIENT_MANAGE);
+
+        Map<String, Object> data = new java.util.HashMap<>();
+        data.put("nomPrenom", req.nomPrenom());
+        data.put("numeroCompte", req.numeroCompte());
+        data.put("agence", req.agence());
+        data.put("matricule", req.matricule());
+        data.put("categorie", req.categorie());
+        data.put("compteDepot", req.compteDepot());
+        data.put("assujettiTaxes", req.assujettiTaxes());
+        data.put("localisation", req.localisation());
+        data.put("dirigeant", req.dirigeant());
+        data.put("telephone1", req.telephone1());
+        data.put("telephone2", req.telephone2());
+        data.put("email", req.email());
+
+        referentiel.update(id, data, user.id());
+        audit.log(user.id().toString(), "MODIFICATION_BASE_CLIENTS", AuditService.SUCCES,
+                id.toString(), clientIp.value());
+        return Map.of("id", id.toString(), "updated", true);
     }
 
     /**

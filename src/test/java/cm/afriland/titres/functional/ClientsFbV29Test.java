@@ -113,6 +113,10 @@ class ClientsFbV29Test {
         return rest.exchange(url(p), HttpMethod.GET, body(null, token), List.class);
     }
 
+    ResponseEntity<Map> PUT(String p, Object payload, String token) {
+        return rest.exchange(url(p), HttpMethod.PUT, body(payload, token), Map.class);
+    }
+
     String login(String email) {
         return loginAvec(email, "Demo1234");
     }
@@ -376,6 +380,58 @@ class ClientsFbV29Test {
         assertThat(me.getBody().get("compteTitres"))
                 .as("le compte de depot ne doit JAMAIS sortir cote client")
                 .isNull();
+    }
+
+    // ─── Edition d'une fiche (back-office) ────────────────────────────────────
+
+    @Test
+    void admin_modifie_une_fiche_existante_sans_la_recreer() {
+        String numero = numeroFichier();
+        POST("/api/v1/admin/clients-fb/import",
+                Map.of("lignes", List.of(ligneIdentiteDistincte(numero, depot(numero)))), agent);
+        String id = (String) pageDe("?q=" + numero).get(0).get("id");
+
+        Map<String, Object> maj = new LinkedHashMap<>();
+        maj.put("nomPrenom", "NOM MODIFIE");
+        maj.put("numeroCompte", numero);
+        maj.put("categorie", "Personnes physiques");
+        maj.put("compteDepot", depot(numero));   // 12 caracteres
+        maj.put("localisation", "DOUALA");
+        maj.put("telephone1", "699111222");
+        assertThat(PUT("/api/v1/admin/clients-fb/" + id, maj, agent).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        List<Map<String, Object>> rows = pageDe("?q=" + numero);
+        assertThat(rows).hasSize(1);                          // pas de doublon cree
+        assertThat(rows.get(0).get("nom_prenom")).isEqualTo("NOM MODIFIE");
+        assertThat(rows.get(0).get("localisation")).isEqualTo("DOUALA");
+    }
+
+    @Test
+    void modification_refuse_un_compte_depot_non_conforme() {
+        String numero = numeroFichier();
+        POST("/api/v1/admin/clients-fb/import",
+                Map.of("lignes", List.of(ligneIdentiteDistincte(numero, depot(numero)))), agent);
+        String id = (String) pageDe("?q=" + numero).get(0).get("id");
+
+        Map<String, Object> maj = new LinkedHashMap<>();
+        maj.put("nomPrenom", "MEKULU M");
+        maj.put("numeroCompte", numero);
+        maj.put("compteDepot", "TROP-COURT");   // != 12 caracteres
+        assertThat(PUT("/api/v1/admin/clients-fb/" + id, maj, agent).getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void import_ecarte_un_compte_depot_non_conforme() {
+        String numero = numeroFichier();
+        Map<String, Object> l = ligneIdentiteDistincte(numero, depot(numero));
+        l.put("compteDepot", "XX");   // 2 caracteres -> ecarte
+        ResponseEntity<Map> r = POST("/api/v1/admin/clients-fb/import",
+                Map.of("lignes", List.of(l)), agent);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getBody().get("importees")).isEqualTo(0);
+        assertThat(r.getBody().get("depotsInvalides")).isEqualTo(1);
     }
 
     // ─── Pagination du referentiel ────────────────────────────────────────────
