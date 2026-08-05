@@ -2,6 +2,7 @@ package cm.afriland.titres.dto;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.UUID;
 
@@ -21,7 +22,7 @@ class UserProfileTest {
     private static UserProfile complet() {
         return new UserProfile(UUID.randomUUID(), "NGONO", "Alice", "alice@example.cm",
                 "CLIENT_PP", "ACTIF", "CCEICMCXX345", "10005000905601009000048",
-                7_500_000L, "NON_QUALIFIE", "INDIVIDUEL", "+237690000000", false, false);
+                7_500_000L, "NON_QUALIFIE", "INDIVIDUEL", "+237690000000", false, false, true);
     }
 
     @Test
@@ -48,6 +49,9 @@ class UserProfileTest {
         assertEquals("NON_QUALIFIE", vu.categorie());
         assertEquals("INDIVIDUEL", vu.typeCompte());
         assertEquals("+237690000000", vu.telephone());
+        // Le client DOIT recevoir ce drapeau : c'est lui qui dispense son
+        // navigateur de la capture faciale apres une soumission d'ordre.
+        assertTrue(vu.prioritaire());
     }
 
     @Test

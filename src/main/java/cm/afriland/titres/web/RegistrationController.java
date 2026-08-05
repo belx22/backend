@@ -71,12 +71,14 @@ public class RegistrationController {
     private final ClientsFbRepository referentiel;
     private final NotificationService notifications;
     private final EmailService emails;
+    private final cm.afriland.titres.config.FaceScanSettingsService faceScan;
 
     public RegistrationController(JdbcTemplate jdbc, PasswordService password,
                                   AuthSessionService session, FileStorageService storage,
                                   RateLimiter rateLimiter, AuditService audit,
                                   ClientsFbRepository referentiel,
-                                  NotificationService notifications, EmailService emails) {
+                                  NotificationService notifications, EmailService emails,
+                                  cm.afriland.titres.config.FaceScanSettingsService faceScan) {
         this.jdbc = jdbc;
         this.password = password;
         this.session = session;
@@ -86,6 +88,7 @@ public class RegistrationController {
         this.referentiel = referentiel;
         this.notifications = notifications;
         this.emails = emails;
+        this.faceScan = faceScan;
     }
 
     // ─────────────────────────────── DTO ────────────────────────────────────
@@ -413,7 +416,10 @@ public class RegistrationController {
             throw ApiException.badRequest(
                     "Ce dossier n'est plus modifiable (statut : " + statut + ").");
         }
-        if (compte(id, "SELECT count(*) FROM face_captures WHERE dossier_id = ?") == 0) {
+        // La capture faciale n'est exigee que si le scan est globalement actif
+        // (interrupteur admin, V35). Desactive, on ne bloque pas la soumission.
+        if (faceScan.isEnabled()
+                && compte(id, "SELECT count(*) FROM face_captures WHERE dossier_id = ?") == 0) {
             throw ApiException.badRequest(
                     "Capture faciale manquante : reprenez la photo avant de soumettre.");
         }
@@ -437,6 +443,16 @@ public class RegistrationController {
     }
 
     // ───────────────────────── Convention (public) ──────────────────────────
+
+    /**
+     * {@code GET /registration/parametres} — parametres publics du parcours
+     * d'inscription. Expose {@code faceScanEnabled} pour que le wizard sache s'il
+     * doit presenter l'etape de capture faciale.
+     */
+    @GetMapping("/parametres")
+    public Map<String, Object> parametres() {
+        return Map.of("faceScanEnabled", faceScan.isEnabled());
+    }
 
     /** Convention courante (HTML + version) pour la langue demandee. */
     @GetMapping("/convention")

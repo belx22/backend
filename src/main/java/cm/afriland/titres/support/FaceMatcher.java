@@ -25,6 +25,16 @@ public final class FaceMatcher {
     public static final String CORRESPOND = "CORRESPOND";
     public static final String DIFFERENT = "DIFFERENT";
     public static final String NON_COMPARABLE = "NON_COMPARABLE";
+    /**
+     * Utilisateur PRIORITAIRE : aucune photo n'etait attendue (cf. migration V34).
+     *
+     * <p>Statut d'AFFICHAGE uniquement — il n'est jamais ecrit en base (la
+     * contrainte CHECK de {@code order_face_checks.match_status} ne le connait
+     * pas) : il n'existe justement aucune ligne a qualifier. Il evite au
+     * back-office de lire « NON_COMPARABLE » — soit « photo attendue,
+     * inexploitable » — la ou rien n'etait exige.</p>
+     */
+    public static final String DISPENSE = "DISPENSE";
 
     private FaceMatcher() {
     }

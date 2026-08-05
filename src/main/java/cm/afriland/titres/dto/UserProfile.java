@@ -29,7 +29,14 @@ public record UserProfile(
          * (titulaire d'un compte JOINT/INDIVIS, ou co-signataire rattache a un tel
          * compte). Pilote l'affichage du menu « Validations » cote client.
          */
-        boolean compteJoint) {
+        boolean compteJoint,
+        /**
+         * Utilisateur PRIORITAIRE : dispense de capture faciale pour ses
+         * operations. Le client s'en sert pour ne pas ouvrir la camera apres
+         * une soumission d'ordre ; le back-office, pour afficher « Dispense »
+         * plutot qu'un controle manquant.
+         */
+        boolean prioritaire) {
 
     /**
      * Profil tel qu'un CLIENT a le droit de le voir : sans solde, et sans compte
@@ -48,7 +55,7 @@ public record UserProfile(
     public UserProfile withoutBalance() {
         return new UserProfile(id, nom, prenom, email, role, statut,
                 compteTitres, compteEspeces, null, categorie, typeCompte, telephone,
-                mustChangePassword, compteJoint);
+                mustChangePassword, compteJoint, prioritaire);
     }
 
     /**
@@ -62,6 +69,6 @@ public record UserProfile(
     public UserProfile withoutCompteTitres() {
         return new UserProfile(id, nom, prenom, email, role, statut,
                 null, compteEspeces, solde, categorie, typeCompte, telephone,
-                mustChangePassword, compteJoint);
+                mustChangePassword, compteJoint, prioritaire);
     }
 }

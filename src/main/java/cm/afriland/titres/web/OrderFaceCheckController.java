@@ -103,12 +103,23 @@ public class OrderFaceCheckController {
                         + "verification_status FROM order_face_checks "
                         + "WHERE order_id = ? ORDER BY created_at DESC LIMIT 1", orderId);
         if (checks.isEmpty()) {
+            // Emetteur PRIORITAIRE : aucune photo n'etait attendue (V34). Repondre
+            // 404 laisserait croire a un controle perdu ; on qualifie la dispense.
+            if (emetteurPrioritaire(orderId)) {
+                return Map.of("orderId", orderId, "matchStatus", FaceMatcher.DISPENSE,
+                        "prioritaire", true, "distance", -1, "seuil", FaceMatcher.SEUIL,
+                        "photoOuverture", "", "photoOrdre", "", "livenessScore", 0,
+                        "verificationStatus", "");
+            }
             throw ApiException.notFound("Aucun controle facial pour cet ordre.");
         }
         Map<String, Object> c = checks.get(0);
 
         return Map.ofEntries(
                 Map.entry("orderId", orderId),
+                // Un prioritaire peut choisir de se prendre en photo : la dispense
+                // n'interdit pas le controle, elle cesse de l'exiger.
+                Map.entry("prioritaire", prioritaire((UUID) c.get("user_id"))),
                 Map.entry("photoOrdre", faces.dataUrl((String) c.get("chemin"))),
                 Map.entry("photoOuverture",
                         faces.dataUrl(faces.cheminPhotoOuverture((UUID) c.get("user_id")))),
@@ -146,7 +157,7 @@ public class OrderFaceCheckController {
 
         // Toutes les personnes du compte : titulaire principal + co-signataires.
         List<Map<String, Object>> personnes = jdbc.queryForList(
-                "SELECT u.id, u.nom, u.prenom, u.email, u.statut, "
+                "SELECT u.id, u.nom, u.prenom, u.email, u.statut, u.prioritaire, "
                         + "s.status AS sig_status, s.decided_at, s.expires_at, s.signature_data "
                         + "FROM users u "
                         + "LEFT JOIN order_signatures s ON s.signatory_id = u.id AND s.order_id = ? "
@@ -165,10 +176,13 @@ public class OrderFaceCheckController {
                             orderId, pid)
                     .stream().findFirst().orElse(Map.of());
 
+            boolean prioritaire = Boolean.TRUE.equals(p.get("prioritaire"));
+
             Map<String, Object> ligne = new java.util.HashMap<>();
             ligne.put("userId", pid);
             ligne.put("nom", nomComplet(p.get("nom"), p.get("prenom")));
             ligne.put("email", p.get("email"));
+            ligne.put("prioritaire", prioritaire);
             // L'emetteur n'a pas de demande de signature : il a consenti en soumettant.
             ligne.put("role", emetteur ? "EMETTEUR" : "COSIGNATAIRE");
             ligne.put("statut", emetteur ? "EMETTEUR" : p.get("sig_status"));
@@ -178,8 +192,11 @@ public class OrderFaceCheckController {
             ligne.put("photoOuverture", faces.dataUrl(faces.cheminPhotoOuverture(pid)));
             ligne.put("photoSoumission", faces.dataUrl((String) check.get("chemin")));
             ligne.put("distance", check.get("distance") == null ? -1 : check.get("distance"));
-            ligne.put("matchStatus",
-                    check.get("match_status") == null ? "NON_COMPARABLE" : check.get("match_status"));
+            // Sans ligne de controle, deux situations opposees : une photo
+            // attendue et manquante (NON_COMPARABLE, a revoir), ou une personne
+            // dispensee (DISPENSE, rien a revoir). Les confondre ferait remonter
+            // tous les ordres des prioritaires dans la file du back-office.
+            ligne.put("matchStatus", matchStatus(check.get("match_status"), prioritaire));
             ligne.put("livenessScore",
                     check.get("liveness_score") == null ? 0 : check.get("liveness_score"));
             ligne.put("verificationStatus", check.get("verification_status"));
@@ -228,6 +245,33 @@ public class OrderFaceCheckController {
     }
 
     // ─────────────────────────── Utilitaires ────────────────────────────────
+
+    /** Vrai si cet utilisateur est dispense de capture faciale (V34). */
+    private boolean prioritaire(UUID userId) {
+        Boolean p = jdbc.query("SELECT prioritaire FROM users WHERE id = ?",
+                rs -> rs.next() && rs.getBoolean("prioritaire"), userId);
+        return Boolean.TRUE.equals(p);
+    }
+
+    /** Vrai si l'emetteur de cet ordre est dispense de capture faciale. */
+    private boolean emetteurPrioritaire(UUID orderId) {
+        Boolean p = jdbc.query(
+                "SELECT u.prioritaire FROM orders o JOIN users u ON u.id = o.client_id "
+                        + "WHERE o.id = ?",
+                rs -> rs.next() && rs.getBoolean("prioritaire"), orderId);
+        return Boolean.TRUE.equals(p);
+    }
+
+    /**
+     * Statut de correspondance affiche au back-office. En l'absence de controle,
+     * {@code DISPENSE} pour un prioritaire, {@code NON_COMPARABLE} sinon.
+     */
+    private static String matchStatus(Object enregistre, boolean prioritaire) {
+        if (enregistre != null) {
+            return enregistre.toString();
+        }
+        return prioritaire ? FaceMatcher.DISPENSE : FaceMatcher.NON_COMPARABLE;
+    }
 
     private static String nomComplet(Object nom, Object prenom) {
         String n = nom == null ? "" : nom.toString();

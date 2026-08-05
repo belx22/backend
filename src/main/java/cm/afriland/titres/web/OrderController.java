@@ -102,15 +102,18 @@ public class OrderController {
     private final EmailService email;
     private final AppProperties props;
     private final OrderFaceCheckService faces;
+    private final cm.afriland.titres.config.FaceScanSettingsService faceScan;
 
     public OrderController(JdbcTemplate jdbc, AuditService audit, NotificationService notifications,
-                           EmailService email, AppProperties props, OrderFaceCheckService faces) {
+                           EmailService email, AppProperties props, OrderFaceCheckService faces,
+                           cm.afriland.titres.config.FaceScanSettingsService faceScan) {
         this.jdbc = jdbc;
         this.audit = audit;
         this.notifications = notifications;
         this.email = email;
         this.props = props;
         this.faces = faces;
+        this.faceScan = faceScan;
     }
 
     /** Identifiant du COMPTE (titulaire principal) : pour un co-signataire, on
@@ -122,6 +125,18 @@ public class OrderController {
                 (rs, n) -> rs.getObject("account_holder_id", UUID.class), userId);
         UUID holder = holders.isEmpty() ? null : holders.get(0);
         return holder != null ? holder : userId;
+    }
+
+    /**
+     * Utilisateur PRIORITAIRE — dispense de capture faciale pour ses operations
+     * (migration V34). Le drapeau est porte par le compte de connexion : on
+     * l'interroge donc sur {@code userId} (la personne qui agit), et non sur le
+     * compte-titres, car c'est bien un visage que l'on renonce a verifier.
+     */
+    private boolean estPrioritaire(UUID userId) {
+        Boolean p = jdbc.query("SELECT prioritaire FROM users WHERE id = ?",
+                rs -> rs.next() && rs.getBoolean("prioritaire"), userId);
+        return Boolean.TRUE.equals(p);
     }
 
     /**
@@ -386,19 +401,29 @@ public class OrderController {
         UUID account = order.clientId();
         if (req.approve()) {
             // Valider engage : meme preuve qu'a l'inscription — signature + visage.
+            // La SIGNATURE est exigee de tous, y compris des prioritaires : c'est
+            // le consentement, pas une verification d'identite.
             ApiException.ensure(req.signatureData() != null && !req.signatureData().isBlank(),
                     "Votre signature est requise pour valider cette opération.");
-            ApiException.ensure(req.imageBase64() != null && !req.imageBase64().isBlank(),
+            // La photo n'est exigee que si la capture faciale est globalement active
+            // (interrupteur admin, V35) ET que le signataire n'est pas PRIORITAIRE
+            // (dispense par compte, V34). Sinon la signature seule suffit.
+            boolean photoFournie = req.imageBase64() != null && !req.imageBase64().isBlank();
+            boolean photoExigee = faceScan.isEnabled() && !estPrioritaire(user.id());
+            ApiException.ensure(photoFournie || !photoExigee,
                     "Une photo de votre visage est requise pour valider cette opération.");
 
             // Le controle facial informe le back-office, il ne bloque pas : un
             // visage juge different n'annule pas la validation du signataire.
-            FaceMatcher.Resultat face = faces.enregistrer(id, user.id(),
-                    new OrderFaceCheckService.Capture(req.imageBase64(), req.livenessScore(),
-                            req.challengeType(), req.descriptor()));
-            audit.log(user.id().toString(), "CONTROLE_FACIAL_COSIGNATURE",
-                    face.matched() ? AuditService.SUCCES : AuditService.ECHEC,
-                    order.reference(), ip.value());
+            // Un prioritaire qui envoie tout de meme sa photo la voit enregistree.
+            if (photoFournie) {
+                FaceMatcher.Resultat face = faces.enregistrer(id, user.id(),
+                        new OrderFaceCheckService.Capture(req.imageBase64(), req.livenessScore(),
+                                req.challengeType(), req.descriptor()));
+                audit.log(user.id().toString(), "CONTROLE_FACIAL_COSIGNATURE",
+                        face.matched() ? AuditService.SUCCES : AuditService.ECHEC,
+                        order.reference(), ip.value());
+            }
 
             jdbc.update("UPDATE order_signatures SET status='SIGNED', decided_at=now(), "
                     + "signature_data=? WHERE order_id = ? AND signatory_id = ?",

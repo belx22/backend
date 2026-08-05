@@ -16,9 +16,14 @@ class UserRowTest {
     private static final UUID TITULAIRE = UUID.fromString("11111111-1111-1111-1111-111111111111");
 
     private static UserRow user(String typeCompte, UUID accountHolderId) {
+        return user(typeCompte, accountHolderId, false);
+    }
+
+    private static UserRow user(String typeCompte, UUID accountHolderId, boolean prioritaire) {
         return new UserRow(UUID.randomUUID(), "client@example.cm", "hash", "CLIENT_PP",
                 "MBALLA", "Jean", "ACTIF", "CT-1", "CE-1", 5_000L, "NON_QUALIFIE",
-                typeCompte, "+237690000000", false, 0, (OffsetDateTime) null, accountHolderId);
+                typeCompte, "+237690000000", false, 0, (OffsetDateTime) null, accountHolderId,
+                prioritaire);
     }
 
     @Test
@@ -75,5 +80,23 @@ class UserRowTest {
         assertThat(p.solde()).isNull();
         assertThat(p.compteJoint()).isTrue();
         assertThat(p.compteTitres()).isEqualTo("CT-1");
+    }
+
+    /**
+     * Le drapeau « prioritaire » doit survivre au masquage destine au client :
+     * c'est lui qui, cote navigateur, evite d'ouvrir la camera apres un ordre.
+     * L'effacer avec le solde reduirait un dispense a un controle manquant.
+     */
+    @Test
+    void prioritaire_est_reporte_et_survit_au_masquage_client() {
+        UserProfile p = user("INDIVIDUEL", null, true).toProfile().pourClient();
+
+        assertThat(p.prioritaire()).isTrue();
+        assertThat(p.solde()).isNull();
+    }
+
+    @Test
+    void non_prioritaire_par_defaut() {
+        assertThat(user("INDIVIDUEL", null).toProfile().prioritaire()).isFalse();
     }
 }

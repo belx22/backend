@@ -97,6 +97,7 @@ public class ClientController {
             + "cp.date_ouverture, cp.created_by, cp.created_at, "
             + "NULLIF(trim(coalesce(cb.nom,'') || ' ' || coalesce(cb.prenom,'')), '') AS created_by_nom, "
             + "u.compte_titres, u.compte_especes, u.solde, u.categorie, u.type_compte, "
+            + "u.prioritaire, "
             + "u.nom AS titulaire_nom, u.prenom AS titulaire_prenom, "
             + "u.email AS titulaire_email, u.telephone AS titulaire_telephone "
             + "FROM users u "
@@ -149,6 +150,8 @@ public class ClientController {
     record ClientDossier(UUID id, String type, String raisonSociale, String rccm,
                          String categorieClient, String matricule, String dirigeant,
                          Boolean assujettiTaxes, String localisation, String telephone2,
+                         /** Client PRIORITAIRE : dispense de capture faciale sur ses operations. */
+                         boolean prioritaire,
                          UUID createdBy, String createdByNom, OffsetDateTime createdAt,
                          CompteDto compte) {
     }
@@ -175,7 +178,9 @@ public class ClientController {
                                Boolean assujettiTaxes, String localisation, String telephone2,
                                String typeCompte, ReqAdresse adresse, List<ReqContact> signataires,
                                List<ReqSousCompte> sousComptes, String compteEspecesLie,
-                               Long soldeEspecesInitial) {
+                               Long soldeEspecesInitial,
+                               /** Reserve a l'ADMIN — dispense de capture faciale (cf. V34). */
+                               Boolean prioritaire) {
     }
 
     // ─────────────────────────── Petits utilitaires ─────────────────────────
@@ -271,8 +276,8 @@ public class ClientController {
         return new ClientDossier(dossier.id(), dossier.type(), dossier.raisonSociale(),
                 dossier.rccm(), dossier.categorieClient(), dossier.matricule(),
                 dossier.dirigeant(), dossier.assujettiTaxes(), dossier.localisation(),
-                dossier.telephone2(), dossier.createdBy(), dossier.createdByNom(),
-                dossier.createdAt(), scrubbed);
+                dossier.telephone2(), dossier.prioritaire(), dossier.createdBy(),
+                dossier.createdByNom(), dossier.createdAt(), scrubbed);
     }
 
     /** {@code POST /clients} — onboarding d'un client investisseur (CLIENT_MANAGE). */
@@ -356,13 +361,19 @@ public class ClientController {
         String nom = personneMorale ? req.raisonSociale().trim() : first.nom().trim();
         String prenom = personneMorale ? null : trimOuNull(first.prenom());
 
+        // Client PRIORITAIRE : dispense de capture faciale. C'est un ALLEGEMENT de
+        // controle — seul l'administrateur de la plateforme peut l'accorder, jamais
+        // un agent ni le client lui-meme (cf. V34).
+        boolean prioritaire = ensurePrioritaireAutorise(creator, req.prioritaire());
+
         UUID userId = jdbc.queryForObject(
                 "INSERT INTO users (email, password_hash, role, nom, prenom, compte_titres, "
                         + "compte_especes, solde, categorie, type_compte, telephone, "
-                        + "must_change_password, initial_password_enc) "
-                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?, TRUE, ?) RETURNING id",
+                        + "must_change_password, initial_password_enc, prioritaire) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?, TRUE, ?,?) RETURNING id",
                 UUID.class, email, passwordHash, role, nom, prenom, compteTitres, compteEspeces,
-                solde, categorie, typeCompte, telephone, cipher.encrypt(motDePasseInitial));
+                solde, categorie, typeCompte, telephone, cipher.encrypt(motDePasseInitial),
+                prioritaire);
 
         jdbc.update("INSERT INTO client_profiles (user_id, type_personne, raison_sociale, rccm, "
                         + "categorie_client, matricule, dirigeant, assujetti_taxes, localisation, "
@@ -436,11 +447,14 @@ public class ClientController {
                 String csTel = telephoneTitulaire(cs);
                 String csNom = cs.nom().trim();
                 String csPrenom = trimOuNull(cs.prenom());
+                // La dispense de photo suit le COMPTE, pas la personne : exiger le
+                // visage d'un co-signataire d'un compte dispense bloquerait la
+                // meme operation qu'on vient d'alleger pour le titulaire.
                 jdbc.update("INSERT INTO users (email, password_hash, role, nom, prenom, telephone, "
-                                + "account_holder_id, must_change_password, initial_password_enc) "
-                                + "VALUES (?,?,?,?,?,?,?, TRUE, ?)",
+                                + "account_holder_id, must_change_password, initial_password_enc, "
+                                + "prioritaire) VALUES (?,?,?,?,?,?,?, TRUE, ?,?)",
                         csEmail, password.hash(csPwd), role, csNom, csPrenom, csTel, userId,
-                        cipher.encrypt(csPwd));
+                        cipher.encrypt(csPwd), prioritaire);
                 String csNomComplet = csPrenom != null ? csNom + " " + csPrenom : csNom;
                 // Co-signataire = personne physique rattachée au compte-titres partagé.
                 credentials.sendInitialPassword(csEmail, csTel, csNomComplet, compteTitres, false,
@@ -473,7 +487,9 @@ public class ClientController {
                                String typeCompte, String statut, String telephone,
                                String email, String compteTitres, String compteEspecesLie,
                                ReqAdresse adresse, List<ReqContact> signataires,
-                               List<ReqSousCompte> sousComptes) {
+                               List<ReqSousCompte> sousComptes,
+                               /** Reserve a l'ADMIN — null = inchange (cf. V34). */
+                               Boolean prioritaire) {
     }
 
     /**
@@ -590,6 +606,20 @@ public class ClientController {
                 categorie, typeCompte, telephone, email, usersStatut, compteTitres, compteEspeces,
                 nomEff, prenomEff, id);
 
+        // 2 bis) Dispense de capture faciale — ADMIN uniquement, et appliquee a
+        //    TOUT le compte (titulaire + co-signataires rattaches) : les
+        //    signataires d'un meme compte doivent tomber sous le meme regime,
+        //    sinon l'operation reste bloquee par le maillon non dispense.
+        if (req.prioritaire() != null) {
+            boolean prioritaire = ensurePrioritaireAutorise(user, req.prioritaire());
+            jdbc.update("UPDATE users SET prioritaire = ?, updated_at = now() "
+                            + "WHERE id = ? OR account_holder_id = ?",
+                    prioritaire, id, id);
+            audit.log(user.id().toString(),
+                    prioritaire ? "CLIENT_PRIORITAIRE_ACTIVE" : "CLIENT_PRIORITAIRE_RETIRE",
+                    AuditService.SUCCES, id.toString(), ip.value());
+        }
+
         // 3) Signataires : remplacement integral si fournis, sinon maj du contact
         //    principal (ordre 0) avec le telephone/e-mail de premier niveau.
         if (sigs != null) {
@@ -694,6 +724,32 @@ public class ClientController {
         return e;
     }
 
+    /**
+     * Controle d'habilitation du drapeau « prioritaire ».
+     *
+     * <p>Marquer un client prioritaire RETIRE un controle (la capture faciale a
+     * chaque operation). Ce n'est donc pas une donnee de dossier comme une autre :
+     * un agent disposant de {@code CLIENT_MANAGE} peut creer et modifier un
+     * client, mais ne peut pas s'affranchir lui-meme d'un dispositif de
+     * securite. Seul l'ADMINISTRATEUR de la plateforme le peut — ce qui est
+     * exactement la regle metier : « leur compte est cree par l'admin ».</p>
+     *
+     * @return la valeur a appliquer ({@code false} si rien n'est demande).
+     */
+    private static boolean ensurePrioritaireAutorise(AuthUser acteur, Boolean demande) {
+        if (!Boolean.TRUE.equals(demande)) {
+            // Retirer la dispense reste possible pour un agent : on ne bride que
+            // l'allegement, jamais le retour au controle.
+            return false;
+        }
+        if (!Rbac.ADMIN.equals(acteur.role())) {
+            throw ApiException.forbidden(
+                    "Seul un administrateur peut marquer un client comme prioritaire "
+                            + "(dispense de contrôle facial).");
+        }
+        return true;
+    }
+
     /** Verifie qu'un numero de compte n'est pas deja utilise (titres ou especes) par un autre compte. */
     private void ensureAccountFree(String numero, UUID excludeId, String message) {
         Long taken = jdbc.queryForObject(
@@ -746,6 +802,7 @@ public class ClientController {
                 rs.getObject("assujetti_taxes", Boolean.class),
                 rs.getString("localisation"),
                 rs.getString("telephone2"),
+                rs.getBoolean("prioritaire"),
         }, profileArgs);
 
         if (rows.isEmpty()) {
@@ -828,7 +885,7 @@ public class ClientController {
                     sousComptes.getOrDefault(uid, List.of()));
             result.add(new ClientDossier(uid, (String) r[1], (String) r[2], (String) r[3],
                     (String) r[18], (String) r[19], (String) r[20], (Boolean) r[21],
-                    (String) r[22], (String) r[23],
+                    (String) r[22], (String) r[23], Boolean.TRUE.equals(r[24]),
                     (UUID) r[4], (String) r[5], (OffsetDateTime) r[6], compte));
         }
         return result;

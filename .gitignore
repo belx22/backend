@@ -1,5 +1,11 @@
 # Build
 /target
+/bin
+
+# Donnees d'execution locales : captures faciales / pieces d'identite televersees
+# (donnees personnelles sensibles) et surcharge Docker propre au poste.
+/data/
+docker-compose.override.yml
 
 # SonarQube — token local + dossier de travail du scanner, ne pas versionner
 sonar-project.properties

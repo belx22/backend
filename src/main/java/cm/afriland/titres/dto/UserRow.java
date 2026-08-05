@@ -27,12 +27,19 @@ public record UserRow(
         int failedLoginAttempts,
         OffsetDateTime lockedUntil,
         /** Titulaire principal du compte-titres si cet utilisateur est co-signataire. */
-        UUID accountHolderId) {
+        UUID accountHolderId,
+        /**
+         * Utilisateur PRIORITAIRE : dispense de capture faciale pour ses
+         * operations (soumission d'ordre, cosignature). Pose par l'ADMIN seul,
+         * a la creation du compte ou par une modification ulterieure.
+         */
+        boolean prioritaire) {
 
     /** Colonnes {@code users} — reutilisees par toutes les requetes SELECT. */
     public static final String COLUMNS = "id, email, password_hash, role, nom, prenom, statut, "
             + "compte_titres, compte_especes, solde, categorie, type_compte, telephone, "
-            + "must_change_password, failed_login_attempts, locked_until, account_holder_id";
+            + "must_change_password, failed_login_attempts, locked_until, account_holder_id, "
+            + "prioritaire";
 
     public static final RowMapper<UserRow> MAPPER = (rs, rowNum) -> new UserRow(
             rs.getObject("id", UUID.class),
@@ -51,7 +58,8 @@ public record UserRow(
             rs.getBoolean("must_change_password"),
             rs.getInt("failed_login_attempts"),
             rs.getObject("locked_until", OffsetDateTime.class),
-            rs.getObject("account_holder_id", UUID.class));
+            rs.getObject("account_holder_id", UUID.class),
+            rs.getBoolean("prioritaire"));
 
     /**
      * Vrai si l'utilisateur participe a un compte-titres a plusieurs signataires.
@@ -71,6 +79,6 @@ public record UserRow(
     public UserProfile toProfile() {
         return new UserProfile(id, nom, prenom, email, role, statut,
                 compteTitres, compteEspeces, solde, categorie, typeCompte, telephone,
-                mustChangePassword, compteJoint());
+                mustChangePassword, compteJoint(), prioritaire);
     }
 }
