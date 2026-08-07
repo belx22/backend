@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.MethodParameter;
 import org.springframework.web.context.request.NativeWebRequest;
 
+import cm.afriland.titres.config.AppProperties;
 import cm.afriland.titres.error.ApiException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,13 +23,18 @@ import static org.mockito.Mockito.when;
 class CurrentUserArgumentResolverTest {
 
     private JwtService jwt;
+    private KeycloakTokenService keycloak;
+    private AppProperties props;
     private CurrentUserArgumentResolver resolver;
     private NativeWebRequest webRequest;
 
     @BeforeEach
     void setUp() {
         jwt = mock(JwtService.class);
-        resolver = new CurrentUserArgumentResolver(jwt);
+        keycloak = mock(KeycloakTokenService.class);
+        props = mock(AppProperties.class);
+        // Keycloak desactive par defaut : un jeton HS256 invalide reste un 401.
+        resolver = new CurrentUserArgumentResolver(jwt, keycloak, props);
         webRequest = mock(NativeWebRequest.class);
     }
 
@@ -92,6 +98,16 @@ class CurrentUserArgumentResolverTest {
         AuthUser u = user();
         when(webRequest.getHeader("Authorization")).thenReturn("Bearer bon");
         when(jwt.verify("bon")).thenReturn(u);
+        assertThat(resolve(AuthUser.class)).isSameAs(u);
+    }
+
+    @Test
+    void AuthUser_bascule_sur_keycloak_quand_HS256_echoue_et_issuer_configure() {
+        AuthUser u = user();
+        when(webRequest.getHeader("Authorization")).thenReturn("Bearer kc");
+        when(jwt.verify("kc")).thenThrow(new RuntimeException("pas un jeton HS256"));
+        when(props.isKeycloakEnabled()).thenReturn(true);
+        when(keycloak.verify("kc")).thenReturn(u);
         assertThat(resolve(AuthUser.class)).isSameAs(u);
     }
 

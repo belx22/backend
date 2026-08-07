@@ -6,6 +6,7 @@ import org.springframework.web.context.request.NativeWebRequest;
 import org.springframework.web.method.support.HandlerMethodArgumentResolver;
 import org.springframework.web.method.support.ModelAndViewContainer;
 
+import cm.afriland.titres.config.AppProperties;
 import cm.afriland.titres.error.ApiException;
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -20,9 +21,14 @@ import jakarta.servlet.http.HttpServletRequest;
 public class CurrentUserArgumentResolver implements HandlerMethodArgumentResolver {
 
     private final JwtService jwtService;
+    private final KeycloakTokenService keycloak;
+    private final AppProperties props;
 
-    public CurrentUserArgumentResolver(JwtService jwtService) {
+    public CurrentUserArgumentResolver(JwtService jwtService, KeycloakTokenService keycloak,
+                                       AppProperties props) {
         this.jwtService = jwtService;
+        this.keycloak = keycloak;
+        this.props = props;
     }
 
     @Override
@@ -57,7 +63,9 @@ public class CurrentUserArgumentResolver implements HandlerMethodArgumentResolve
         try {
             user = jwtService.verify(token);
         } catch (RuntimeException e) {
-            throw ApiException.unauthorized("Jeton d'acces invalide ou expire.");
+            // Jeton non HS256 : tenter un jeton Keycloak (RS256) si l'issuer est
+            // configure. Sert la migration sans casser l'authentification maison.
+            user = verifierKeycloak(token);
         }
 
         // Un jeton d'inscription (portee REGISTRATION) n'est PAS une session
@@ -69,6 +77,24 @@ public class CurrentUserArgumentResolver implements HandlerMethodArgumentResolve
                     "Jeton d'inscription : acces limite au parcours d'inscription. Connectez-vous.");
         }
         return optional ? new OptionalAuthUser(user) : user;
+    }
+
+    /**
+     * Tente de valider un jeton Keycloak (RS256). Si l'issuer n'est pas configure
+     * ou si la validation echoue, renvoie un 401 generique ; un rejet metier
+     * explicite de Keycloak (compte introuvable/non actif) est preserve.
+     */
+    private AuthUser verifierKeycloak(String token) {
+        if (!props.isKeycloakEnabled()) {
+            throw ApiException.unauthorized("Jeton d'acces invalide ou expire.");
+        }
+        try {
+            return keycloak.verify(token);
+        } catch (ApiException metier) {
+            throw metier;
+        } catch (RuntimeException e) {
+            throw ApiException.unauthorized("Jeton d'acces invalide ou expire.");
+        }
     }
 
     /** Routes qu'un jeton d'inscription peut atteindre (parcours de depot + profil). */

@@ -11,6 +11,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import cm.afriland.titres.security.ClientIpArgumentResolver;
 import cm.afriland.titres.security.CurrentUserArgumentResolver;
 import cm.afriland.titres.security.JwtService;
+import cm.afriland.titres.security.KeycloakTokenService;
 import cm.afriland.titres.security.MustChangePasswordInterceptor;
 
 /**
@@ -21,10 +22,12 @@ import cm.afriland.titres.security.MustChangePasswordInterceptor;
 public class WebConfig implements WebMvcConfigurer {
 
     private final JwtService jwtService;
+    private final KeycloakTokenService keycloak;
     private final AppProperties props;
 
-    public WebConfig(JwtService jwtService, AppProperties props) {
+    public WebConfig(JwtService jwtService, KeycloakTokenService keycloak, AppProperties props) {
         this.jwtService = jwtService;
+        this.keycloak = keycloak;
         this.props = props;
     }
 
@@ -46,7 +49,7 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addArgumentResolvers(List<HandlerMethodArgumentResolver> resolvers) {
-        resolvers.add(new CurrentUserArgumentResolver(jwtService));
+        resolvers.add(new CurrentUserArgumentResolver(jwtService, keycloak, props));
         resolvers.add(new ClientIpArgumentResolver());
     }
 

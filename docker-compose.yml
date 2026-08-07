@@ -51,6 +51,10 @@ services:
       # LDAP_THEN_LOCAL (annuaire puis repli base). L'annuaire se configure dans
       # l'espace d'administration > LDAP / Active Directory.
       APP_AUTH_MODE: "${APP_AUTH_MODE:-LOCAL}"
+      # Issuer Keycloak (OIDC). Renseigne = l'API accepte AUSSI les jetons RS256
+      # du realm (valides via JWKS), en plus des jetons HS256 maison. Sert la
+      # migration du frontend vers Keycloak. Vide = desactive.
+      APP_KEYCLOAK_ISSUER: "${APP_KEYCLOAK_ISSUER:-}"
       # Jeu de donnees des TESTS. Desactive : l'application demarre sur une base
       # vierge, sans aucune donnee de demonstration.
       APP_SEED_ON_START: "${APP_SEED_ON_START:-false}"

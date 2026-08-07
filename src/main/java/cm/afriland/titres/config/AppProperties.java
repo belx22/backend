@@ -51,6 +51,15 @@ public class AppProperties {
     public static final String MODE_LOCAL = "LOCAL";
     private String authMode = MODE_LOCAL;
     /**
+     * Issuer Keycloak (OIDC) — ex. {@code https://kc.example/realms/afb}. Quand il
+     * est renseigne, l'API accepte AUSSI les jetons d'acces RS256 emis par ce realm
+     * (valides via JWKS), en plus des jetons HS256 maison. Vide = desactive.
+     *
+     * <p>Sert la migration vers Keycloak (le frontend Next.js authentifie via
+     * Keycloak) sans casser l'authentification existante.</p>
+     */
+    private String keycloakIssuer = "";
+    /**
      * Insere le jeu de donnees des TESTS si la base est vide.
      *
      * <p>Faux par defaut : l'application livree ne contient aucune donnee de
@@ -163,6 +172,16 @@ public class AppProperties {
         };
     }
     public void setAuthMode(String authMode) { this.authMode = authMode; }
+
+    /** Issuer Keycloak configure (chaine vide si desactive). */
+    public String getKeycloakIssuer() {
+        return keycloakIssuer == null ? "" : keycloakIssuer.trim();
+    }
+
+    public void setKeycloakIssuer(String keycloakIssuer) { this.keycloakIssuer = keycloakIssuer; }
+
+    /** L'acceptation des jetons Keycloak est-elle activee ? */
+    public boolean isKeycloakEnabled() { return !getKeycloakIssuer().isEmpty(); }
 
     public boolean isSeedOnStart() { return seedOnStart; }
     public void setSeedOnStart(boolean seedOnStart) { this.seedOnStart = seedOnStart; }
