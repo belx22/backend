@@ -66,11 +66,16 @@ public class KeycloakTokenService {
                 .parseSignedClaims(token)
                 .getPayload();
 
-        String email = claims.get("email", String.class);
-        if (email == null || email.isBlank()) {
+        // Identifiant de rapprochement : e-mail en priorite, a defaut le
+        // preferred_username (souvent egal a l'e-mail selon la configuration du realm).
+        String identifiant = claims.get("email", String.class);
+        if (identifiant == null || identifiant.isBlank()) {
+            identifiant = claims.get("preferred_username", String.class);
+        }
+        if (identifiant == null || identifiant.isBlank()) {
             throw ApiException.unauthorized("Jeton Keycloak sans e-mail : compte introuvable.");
         }
-        return resoudreUtilisateur(email);
+        return resoudreUtilisateur(identifiant);
     }
 
     /** Rapproche l'e-mail du jeton d'un compte ACTIF ; en fait un AuthUser. */
